@@ -1,0 +1,17 @@
+[package]
+name = "miniargs"
+version = "0.1.16"
+edition = "2021"
+license = "MIT"
+description = "A small, zero-dependency argument parser."
+repository = "https://github.com/yuryshulaev/miniargs"
+categories = ["command-line-interface"]
+keywords = [
+	"arg",
+	"argument",
+	"cli",
+	"parse",
+	"parser",
+]
+
+[dependencies]
