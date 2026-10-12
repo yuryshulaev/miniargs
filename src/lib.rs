@@ -457,7 +457,9 @@ pub struct ArgParser {
 	program: String,
 	defs: Vec<ArgDef>,
 	positionals: Vec<PositionalDef>,
-	version: Option<&'static str>,
+	version: Option<Cow<'static, str>>,
+	about: Option<Cow<'static, str>>,
+	footer: Option<Cow<'static, str>>,
 }
 
 impl ArgParser {
@@ -467,11 +469,23 @@ impl ArgParser {
 			defs: Vec::new(),
 			positionals: Vec::new(),
 			version: None,
+			about: None,
+			footer: None,
 		}
 	}
 
-	pub fn set_version(&mut self, version: &'static str) {
-		self.version = Some(version);
+	pub fn set_version(&mut self, version: impl Into<Cow<'static, str>>) {
+		self.version = Some(version.into());
+	}
+
+	/// Text printed before the usage line, for a short description.
+	pub fn set_about(&mut self, text: impl Into<Cow<'static, str>>) {
+		self.about = Some(text.into());
+	}
+
+	/// Text printed after the options, for examples or links.
+	pub fn set_footer(&mut self, text: impl Into<Cow<'static, str>>) {
+		self.footer = Some(text.into());
 	}
 
 	/// Print `msg` to stderr, then a `--help` hint, and exit with code 2.
@@ -668,7 +682,7 @@ impl ArgParser {
 				std::process::exit(0);
 			}
 			Err(ParseError::Version) => {
-				if let Some(v) = self.version {
+				if let Some(v) = &self.version {
 					println!("{v}");
 				}
 				std::process::exit(0);
@@ -922,7 +936,13 @@ impl ArgParser {
 	// --- help ----------------------------------------------------------
 
 	pub fn help(&self) -> String {
-		let mut out = format!("Usage: {}", self.program);
+		let mut out = String::new();
+		if let Some(about) = &self.about {
+			out.push_str(about);
+			out.push_str("\n\n");
+		}
+
+		out.push_str(&format!("Usage: {}", self.program));
 		if !self.defs.is_empty() || self.version.is_some() {
 			out.push_str(" [OPTIONS]");
 		}
@@ -947,6 +967,12 @@ impl ArgParser {
 		}
 		out.push_str("\nOptions:\n");
 		push_rows(&mut out, &opt_rows, w);
+
+		if let Some(footer) = &self.footer {
+			out.push('\n');
+			out.push_str(footer);
+			out.push('\n');
+		}
 
 		out
 	}

@@ -224,6 +224,38 @@ if args.inputs.is_empty() {
 
 `parser.die(msg)` prints `error: {msg}` followed by a `--help` hint and exits with code 2.
 
+## Customizing help
+
+Three setters add program-level text to `--help`:
+
+```rust
+let mut parser = ArgParser::new("pack");
+parser.set_version(env!("CARGO_PKG_VERSION"));
+parser.set_about("Build a project and collect its artifacts.");
+parser.set_footer("Report bugs at https://github.com/you/pack/issues");
+```
+
+`set_version` enables `--version`/`-V` and adds the line to the options. `set_about` prints before the usage line, `set_footer` after the options.
+
+```
+Build a project and collect its artifacts.
+
+Usage: pack [OPTIONS] <output> [inputs...]
+
+Arguments:
+  <output>       Output file [required]
+  <inputs>...    Input files
+
+Options:
+  -t, --target <TARGET>  Build target [required]
+  -h, --help             Print help
+  -V, --version          Print version
+
+Report bugs at https://github.com/you/pack/issues
+```
+
+All three accept `impl Into<Cow<'static, str>>`, so `&'static str` literals and `format!(...)` both work. Multi-line text works with `\n`, and nothing is reflowed — what you write is what appears.
+
 ## Enumerated values
 
 Implement `Choice` for a closed set of values. The parser learns the accepted names, uses them for error messages, and lists them in `--help`:

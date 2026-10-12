@@ -663,6 +663,22 @@ fn help_shows_choice_values() {
 	assert!(h.contains("[default: auto]"), "{h}");
 }
 
+#[test]
+fn help_prints_about_before_usage() {
+	let mut p = ArgParser::new("test");
+	p.set_about("A test program.");
+	let h = p.help();
+	assert!(h.starts_with("A test program.\n\nUsage: test"), "{h}");
+}
+
+#[test]
+fn help_prints_footer_after_options() {
+	let mut p = ArgParser::new("test");
+	p.set_footer("See the docs.");
+	let h = p.help();
+	assert!(h.trim_end().ends_with("See the docs."), "{h}");
+}
+
 // ---------------------------------------------------------------------------
 // kebab
 // ---------------------------------------------------------------------------
