@@ -1012,3 +1012,159 @@ fn non_utf8_path_after_separator_works() {
 	let a = p.try_parse(argv).unwrap();
 	assert_eq!(rest.get(&a), vec![expected]);
 }
+
+// ---------------------------------------------------------------------------
+// args! macro
+// ---------------------------------------------------------------------------
+
+mod args_macro {
+	use std::path::PathBuf;
+
+	use miniargs::{arg, args, ArgParser};
+
+	args! {
+		#[derive(Debug)]
+		pub struct TestArgs {
+			target: String = required(arg().short('t').desc("Build target")),
+			jobs: u32 = default(1, arg().short('j').desc("Parallel jobs")),
+			verbose: bool = flag(arg().short('v').desc("Verbose output")),
+			include: Vec<PathBuf> = repeated(arg().short('I').desc("Include")),
+			output: PathBuf = positional(arg().desc("Output file")),
+			inputs: Vec<PathBuf> = positional_variadic(arg().desc("Input files")),
+		}
+	}
+
+	fn parse(argv: &[&str]) -> TestArgs {
+		let full: Vec<&str> = std::iter::once("test").chain(argv.iter().copied()).collect();
+		TestArgs::parse_from(&mut ArgParser::new("test"), full)
+	}
+
+	#[test]
+	fn parses_all_shapes() {
+		let a = parse(&["-t", "release", "-v", "-Ia", "out.bin", "in1", "in2"]);
+		assert_eq!(a.target, "release");
+		assert_eq!(a.jobs, 1);
+		assert!(a.verbose);
+		assert_eq!(a.include, vec![PathBuf::from("a")]);
+		assert_eq!(a.output, PathBuf::from("out.bin"));
+		assert_eq!(a.inputs, vec![PathBuf::from("in1"), PathBuf::from("in2")]);
+	}
+
+	#[test]
+	fn default_applies_when_absent() {
+		let a = parse(&["-t", "x", "out.bin"]);
+		assert_eq!(a.jobs, 1);
+	}
+
+	#[test]
+	fn default_overridden() {
+		let a = parse(&["-t", "x", "-j", "8", "out.bin"]);
+		assert_eq!(a.jobs, 8);
+	}
+
+	#[test]
+	fn flag_absent_is_false() {
+		let a = parse(&["-t", "x", "out.bin"]);
+		assert!(!a.verbose);
+	}
+
+	#[test]
+	fn repeated_absent_is_empty() {
+		let a = parse(&["-t", "x", "out.bin"]);
+		assert!(a.include.is_empty());
+	}
+
+	#[test]
+	fn variadic_absent_is_empty() {
+		let a = parse(&["-t", "x", "out.bin"]);
+		assert!(a.inputs.is_empty());
+	}
+
+	#[test]
+	fn parse_from_accepts_str_slices() {
+		// The relaxed bound on `parse_from` is what makes this compile.
+		let a = parse(&["-t", "x", "out.bin"]);
+		assert_eq!(a.target, "x");
+	}
+
+	#[test]
+	fn parse_from_accepts_osstring_iter() {
+		use std::ffi::OsString;
+		let argv: Vec<OsString> = vec!["test".into(), "-t".into(), "x".into(), "out.bin".into()];
+		let a = TestArgs::parse_from(&mut ArgParser::new("test"), argv);
+		assert_eq!(a.target, "x");
+	}
+}
+
+mod args_macro_kebab {
+	use miniargs::{arg, args, ArgParser};
+
+	args! {
+		#[derive(Debug)]
+		struct Args {
+			file_name: String = required(arg()),
+			dry_run: bool = flag(arg()),
+		}
+	}
+
+	#[test]
+	fn field_name_is_kebab_cased() {
+		let a = Args::parse_from(
+			&mut ArgParser::new("test"),
+			["test", "--file-name", "x", "--dry-run"],
+		);
+		assert_eq!(a.file_name, "x");
+		assert!(a.dry_run);
+	}
+
+	#[test]
+	fn snake_case_rejected_on_command_line() {
+		let argv = ["test", "--file_name", "x"];
+		// `parse` exits on unknown option; use the underlying parser to
+		// observe the error.
+		let mut parser = ArgParser::new("test");
+		let _ = parser.required::<String>("file-name", arg());
+		let e = match parser.try_parse(argv) {
+			Ok(_) => panic!("expected Err"),
+			Err(miniargs::ParseError::User(msg)) => msg,
+			Err(other) => panic!("expected User error, got {other:?}"),
+		};
+		assert!(e.contains("--file_name"), "{e}");
+	}
+}
+
+mod args_macro_raw_ident {
+	use miniargs::{arg, args, ArgParser};
+
+	args! {
+		#[derive(Debug)]
+		struct Args {
+			r#move: bool = flag(arg()),
+			r#type: Option<String> = optional(arg()),
+		}
+	}
+
+	#[test]
+	fn raw_identifier_strips_prefix() {
+		let a = Args::parse_from(&mut ArgParser::new("test"), ["test", "--move", "--type", "x"]);
+		assert!(a.r#move);
+		assert_eq!(a.r#type, Some("x".to_string()));
+	}
+}
+
+mod args_macro_vis {
+	use miniargs::{arg, args, ArgParser};
+
+	args! {
+		#[derive(Debug)]
+		pub struct Args {
+			pub host: String = required(arg()),
+		}
+	}
+
+	#[test]
+	fn public_field_is_accessible() {
+		let a = Args::parse_from(&mut ArgParser::new("test"), ["test", "--host", "x"]);
+		assert_eq!(a.host, "x");
+	}
+}

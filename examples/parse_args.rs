@@ -23,7 +23,7 @@ fn main() {
 		target: required(arg().short('t').desc("Build target")),
 		jobs: default(1, arg().short('j').desc("Parallel jobs").type_name("count")),
 		// `project_name` becomes `--project-name` on the command line (all '_' become '-').
-		project_name: optional(arg().desc("Project name (defaults to directory name)")),
+		project_name: optional(arg().desc("Project name")),
 		log: optional(arg().desc("Log file path")),
 		verbose: flag(arg().short('v').desc("Verbose output")),
 		include: repeated(arg().short('I').desc("Add include directory")),

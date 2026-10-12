@@ -1283,6 +1283,63 @@ macro_rules! parse_args {
 	}};
 }
 
+/// Define a struct and generate `parse` / `parse_from` constructors for it.
+///
+/// ```ignore
+/// args! {
+///     #[derive(Debug)]
+///     pub struct PackArgs {
+///         target: String = required(arg().short('t').desc("Build target")),
+///         verbose: bool = flag(arg().short('v').desc("Verbose output")),
+///     }
+/// }
+/// ```
+///
+/// Each field is `name: Type = builder(...)`. The field name becomes the CLI
+/// name, kebab-cased and stripped of any `r#` prefix (`file_name` →
+/// `--file-name`, `r#move` → `--move`); the field type fixes the builder's
+/// type parameter.
+///
+/// - `PackArgs::parse(parser)` reads `std::env::args_os()`.
+/// - `PackArgs::parse_from(parser, argv)` reads an explicit iterator, for
+///   tests. `argv` must start with the program name.
+///
+/// The parser is taken by value, so configure it first (`set_version`,
+/// `set_about`, `set_footer`) and then hand it over. No attributes are added
+/// by the macro; `$(#[$meta])*` is re-emitted on the generated struct.
+#[macro_export]
+macro_rules! args {
+	(
+		$(#[$meta:meta])*
+		$vis:vis struct $T:ident {
+			$($field_vis:vis $name:ident : $ty:ty = $method:ident ( $($tail:tt)* )),* $(,)?
+		}
+	) => {
+		$(#[$meta])*
+		$vis struct $T {
+			$($field_vis $name: $ty,)*
+		}
+
+		impl $T {
+			/// Parse from `std::env::args_os()`.
+			pub fn parse(parser: &mut $crate::ArgParser) -> Self {
+				Self::parse_from(parser, ::std::env::args_os())
+			}
+
+			/// Parse from an explicit argv. Useful in tests.
+			pub fn parse_from<I>(parser: &mut $crate::ArgParser, argv: I) -> Self
+			where
+				I: IntoIterator,
+				I::Item: Into<::std::ffi::OsString>,
+			{
+				$crate::parse_args!(parser, argv; $T {
+					$($name: $method ( $($tail)* )),*
+				})
+			}
+		}
+	};
+}
+
 // ============================================================================
 // Subcommand dispatch
 // ============================================================================

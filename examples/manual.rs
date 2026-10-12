@@ -17,10 +17,7 @@ fn main() {
 	);
 
 	// Optional named option.
-	let project_name = parser.optional(
-		"project-name", //
-		arg().desc("Project name (defaults to directory name)"),
-	);
+	let project_name = parser.optional("project-name", arg().desc("Project name"));
 
 	// Optional named option with a hidden type name.
 	let log = parser.optional("log", arg().desc("Log file path").type_name_hidden());

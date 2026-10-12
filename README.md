@@ -24,36 +24,27 @@ cargo add miniargs
 ```rust
 use std::path::PathBuf;
 
-use miniargs::{arg, parse_args, ArgParser};
+use miniargs::{arg, args, ArgParser};
 
-#[allow(dead_code)]
-#[derive(Debug)]
-struct Args {
-    target: String,
-    jobs: u32,
-    project_name: Option<String>,
-    log: Option<PathBuf>,
-    verbose: bool,
-    include: Vec<PathBuf>,
-    output: PathBuf,
-    inputs: Vec<PathBuf>,
+args! {
+    #[derive(Debug)]
+    struct Args {
+        target: String = required(arg().short('t').desc("Build target")),
+        jobs: u32 = default(1, arg().short('j').desc("Parallel jobs").type_name("count")),
+        // `project_name` becomes `--project-name` on the command line (all '_' become '-').
+        project_name: Option<String> = optional(arg().desc("Project name")),
+        log: Option<PathBuf> = optional(arg().desc("Log file path")),
+        verbose: bool = flag(arg().short('v').desc("Verbose output")),
+        include: Vec<PathBuf> = repeated(arg().short('I').desc("Add include directory")),
+        output: PathBuf = positional(arg().desc("Output file")),
+        inputs: Vec<PathBuf> = positional_variadic(arg().desc("Input files")),
+    }
 }
 
 fn main() {
     let mut parser = ArgParser::new("pack");
     parser.set_version(env!("CARGO_PKG_VERSION"));
-
-    let args = parse_args!(parser; Args {
-        target: required(arg().short('t').desc("Build target")),
-        jobs: default(1, arg().short('j').desc("Parallel jobs").type_name("count")),
-        // `project_name` becomes `--project-name` on the command line (all '_' become '-').
-        project_name: optional(arg().desc("Project name (defaults to directory name)")),
-        log: optional(arg().desc("Log file path")),
-        verbose: flag(arg().short('v').desc("Verbose output")),
-        include: repeated(arg().short('I').desc("Add include directory")),
-        output: positional(arg().desc("Output file")),
-        inputs: positional_variadic(arg().desc("Input files")),
-    });
+    let args = Args::parse(&mut parser);
 
     if args.inputs.is_empty() {
         parser.die("at least one input file is required");
@@ -69,6 +60,8 @@ fn main() {
 Run with `--help` to see the generated usage text.
 
 ## Argument shapes, by example
+
+Each shape below is shown in `parse_args!` form (`field: builder(...)`). In `args!`, the same builder goes after a type: `field: Type = builder(...)`.
 
 **Required named option.** Missing it is an error.
 
@@ -185,9 +178,58 @@ if args.inputs.is_empty() {
 
 `parser.die(msg)` prints `error: {msg}` followed by a `--help` hint and exits with code 2.
 
-## Without the macro
+## The `args!` macro
 
-`parse_args!` is the recommended path, but everything works without it. Call the same methods directly, then read each key:
+The example at the top uses `args!`. Each field is `name: Type = builder(...)`; the name becomes the CLI name, kebab-cased.
+
+Two constructors are generated. `parse(&mut parser)` reads `std::env::args_os()`; `parse_from(&mut parser, argv)` reads an explicit iterator for tests, and `argv` must start with the program name.
+
+```rust
+let argv = vec![OsString::from("pack"), OsString::from("-v")];
+let mut parser = ArgParser::new("pack");
+let args = PackArgs::parse_from(&mut parser, argv);
+```
+
+## The `parse_args!` macro
+
+If your struct is defined separately, use `parse_args!`:
+
+```rust
+let args = parse_args!(parser; Args {
+    file_name: required(arg().short('f').desc("File to process")),
+});
+```
+
+This expands to:
+
+```rust
+let args = {
+    let file_name = parser.required(
+        kebab("file_name"),
+        arg().short('f').desc("File to process"),
+    );
+    let args = parser.parse(std::env::args_os());
+    Args { file_name: file_name.get(&args) }
+};
+```
+
+The struct field type drives the parser type (`file_name: String` instantiates `required::<String>`), so nothing is written twice. The parser is passed explicitly because `macro_rules!` hygiene prevents the macro body from referring to a caller binding by name.
+
+For tests, use the two-argument form with an explicit argv:
+
+```rust
+let argv = vec![OsString::from("pack"), OsString::from("-v"), OsString::from("out.bin")];
+let args = parse_args!(parser, argv; Args {
+    verbose: flag(arg().short('v')),
+    output: positional(arg()),
+});
+```
+
+`std::env::args_os()` is process-global and unsafe to mutate in parallel tests, so the explicit-argv form is the one you want in `#[test]` functions.
+
+## Without macros
+
+Everything works without either macro. Call the same methods directly, then read each key:
 
 ```rust
 let mut parser = ArgParser::new("pack");
@@ -206,45 +248,6 @@ let output: PathBuf = output.get(&args);
 When you don't use the macro, the name is the first argument to each method, and the type comes from the `let` annotation at the read site: `let host: String = host.get(&args);`. Call `miniargs::kebab("file_name")` if you want the same `_` to `-` conversion the macro applies.
 
 See `examples/manual.rs`.
-
-## How `parse_args!` works
-
-```rust
-let args = parse_args!(parser; Args {
-    file_name: required(arg().short('f').desc("File to process")),
-});
-```
-
-expands to:
-
-```rust
-let args = {
-    let file_name = parser.required(
-        kebab("file_name"),
-        arg().short('f').desc("File to process"),
-    );
-    let args = parser.parse(std::env::args_os());
-    Args { file_name: file_name.get(&args) }
-};
-```
-
-`kebab("file_name")` returns `"file-name"`, so the argument is `--file-name` on the command line while the struct field stays `file_name` in Rust. Names without underscores pass through unchanged. Raw identifiers (`r#move`) lose the `r#` prefix, so `r#move` becomes `--move`.
-
-The struct field type drives the parser type (`file_name: String` instantiates `required::<String>`), so nothing is written twice and there are no turbofish annotations.
-
-The parser is passed explicitly because `macro_rules!` hygiene prevents the macro body from referring to a caller binding by name.
-
-For tests, use the two-argument form with an explicit argv:
-
-```rust
-let argv = vec![OsString::from("pack"), OsString::from("-v"), OsString::from("out.bin")];
-let args = parse_args!(parser, argv; Args {
-    verbose: flag(arg().short('v')),
-    output: positional(arg()),
-});
-```
-
-`std::env::args_os()` is process-global and unsafe to mutate in parallel tests, so the explicit-argv form is the one you want in `#[test]` functions.
 
 ## Customizing help
 
@@ -276,7 +279,7 @@ Options:
 Report bugs at https://github.com/you/pack/issues
 ```
 
-All three accept `impl Into<Cow<'static, str>>`, so `&'static str` literals and `format!(...)` both work. Multi-line text works with `\n`, and nothing is reflowed — what you write is what appears.
+All three accept `impl Into<Cow<'static, str>>`, so `&'static str` literals and `format!(...)` both work. Multi-line text works with `\n`, and nothing is reflowed — what you write is what appears.
 
 ## Enumerated values
 
@@ -299,7 +302,7 @@ Use it like any other type:
 let color = parser.default("color", Color::Auto, arg().desc("Color mode"));
 ```
 
-The value strings appear once, in the macro call. Everything else — the enum, `Choice`, `Display`, the help hint, the "requires a value" error — derives from that one list.
+The value strings appear once, in the macro call. Everything else — the enum, `Choice`, `Display`, the help hint, the "requires a value" error — derives from that one list.
 
 ```
 $ pack --color wef
@@ -331,7 +334,7 @@ impl std::fmt::Display for Color {
 }
 ```
 
-Here the variants are listed twice — once in the enum, once in the macro — so a variant added to the enum but not the macro is a compile error:
+Here the variants are listed twice — once in the enum, once in the macro — so a variant added to the enum but not the macro is a compile error:
 
 ```
 error[E0004]: non-exhaustive patterns: `Color::New` not covered
@@ -463,7 +466,16 @@ Dispatch on `argv[1]` with `Dispatcher`. Each command gets its own `ArgParser` a
 ```rust
 use std::ffi::OsString;
 
-use miniargs::{arg, parse_args, ArgParser, Dispatcher};
+use miniargs::{arg, args, ArgParser, Dispatcher};
+
+args! {
+    #[derive(Debug)]
+    struct AddArgs {
+        collection_name: String = required(arg().short('n').desc("Collection")),
+        force: bool = flag(arg().short('f').desc("Overwrite existing entries")),
+        files: Vec<PathBuf> = positional_variadic(arg().desc("Files to add")),
+    }
+}
 
 fn main() {
     let mut dispatcher = Dispatcher::new("myprog");
@@ -475,9 +487,7 @@ fn main() {
 
 fn cmd_add(prog: &str, argv: &[OsString]) {
     let mut parser = ArgParser::new(format!("{prog} add"));
-    let args = parse_args!(parser, argv; AddArgs {
-        // ...
-    });
+    let args = AddArgs::parse_from(&mut parser, argv);
     // ...
 }
 ```

@@ -1,18 +1,22 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use miniargs::{arg, parse_args, ArgParser, Dispatcher};
+use miniargs::{arg, args, ArgParser, Dispatcher};
 
-#[derive(Debug)]
-struct AddArgs {
-	collection_name: String,
-	force: bool,
-	files: Vec<PathBuf>,
+args! {
+	#[derive(Debug)]
+	struct AddArgs {
+		collection_name: String = required(arg().short('n').desc("Collection to add to")),
+		force: bool = flag(arg().short('f').desc("Overwrite existing entries")),
+		files: Vec<PathBuf> = positional_variadic(arg().desc("Files to add")),
+	}
 }
 
-#[derive(Debug)]
-struct RemoveArgs {
-	collection_name: String,
-	force: bool,
+args! {
+	#[derive(Debug)]
+	struct RemoveArgs {
+		collection_name: String = required(arg().short('n').desc("Collection to remove")),
+		force: bool = flag(arg().short('f').desc("Remove without confirmation")),
+	}
 }
 
 fn main() {
@@ -25,11 +29,7 @@ fn main() {
 
 fn cmd_add(prog: &str, argv: &[OsString]) {
 	let mut parser = ArgParser::new(format!("{prog} add"));
-	let args = parse_args!(parser, argv; AddArgs {
-		collection_name: required(arg().short('n').desc("Collection to add to")),
-		force: flag(arg().short('f').desc("Overwrite existing entries")),
-		files: positional_variadic(arg().desc("Files to add")),
-	});
+	let args = AddArgs::parse_from(&mut parser, argv);
 
 	if args.files.is_empty() {
 		parser.die("at least one file is required");
@@ -42,10 +42,7 @@ fn cmd_add(prog: &str, argv: &[OsString]) {
 
 fn cmd_remove(prog: &str, argv: &[OsString]) {
 	let mut parser = ArgParser::new(format!("{prog} remove"));
-	let args = parse_args!(parser, argv; RemoveArgs {
-		collection_name: required(arg().short('n').desc("Collection to remove")),
-		force: flag(arg().short('f').desc("Remove without confirmation")),
-	});
+	let args = RemoveArgs::parse_from(&mut parser, argv);
 
 	if !args.force {
 		eprintln!("error: refusing to remove {:?} without --force", args.collection_name);
