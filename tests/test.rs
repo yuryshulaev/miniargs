@@ -1168,3 +1168,162 @@ mod args_macro_vis {
 		assert_eq!(a.host, "x");
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+mod validation_helpers {
+	use miniargs::validation::{non_empty, non_empty_vec, positive, require};
+
+	#[test]
+	fn positive_accepts_positive_values() {
+		assert!(positive(&1u32).is_ok());
+		assert!(positive(&1i64).is_ok());
+		assert!(positive(&1.5f64).is_ok());
+	}
+
+	#[test]
+	fn positive_rejects_zero_and_negative() {
+		assert!(positive(&0u32).is_err());
+		assert!(positive(&-1i64).is_err());
+		assert!(positive(&0.0f64).is_err());
+		assert!(positive(&-1.5f64).is_err());
+	}
+
+	#[test]
+	fn non_empty_accepts_non_empty_string() {
+		assert!(non_empty(&"x".to_string()).is_ok());
+	}
+
+	#[test]
+	fn non_empty_rejects_empty_string() {
+		assert!(non_empty(&String::new()).is_err());
+	}
+
+	#[test]
+	fn non_empty_vec_accepts_non_empty() {
+		assert!(non_empty_vec(&vec![1u32]).is_ok());
+	}
+
+	#[test]
+	fn non_empty_vec_rejects_empty() {
+		assert!(non_empty_vec(&Vec::<u32>::new()).is_err());
+	}
+
+	#[test]
+	fn require_ok_when_true() {
+		assert!(require(true, "never seen").is_ok());
+	}
+
+	#[test]
+	fn require_returns_the_message() {
+		let e = require(false, "custom message").unwrap_err();
+		assert_eq!(e, "custom message");
+	}
+}
+
+mod validation_integration {
+	use std::cell::Cell;
+
+	use miniargs::*;
+
+	use super::argv;
+
+	thread_local! {
+		static CALL_COUNT: Cell<u32> = Cell::new(0);
+		static LAST_LEN: Cell<usize> = Cell::new(0);
+	}
+
+	fn counting(_: &u32) -> Result<(), String> {
+		CALL_COUNT.with(|c| c.set(c.get() + 1));
+		Ok(())
+	}
+
+	fn record_len(v: &Vec<String>) -> Result<(), String> {
+		LAST_LEN.with(|c| c.set(v.len()));
+		Ok(())
+	}
+
+	fn reset_count() {
+		CALL_COUNT.with(|c| c.set(0));
+	}
+
+	fn count() -> u32 {
+		CALL_COUNT.with(|c| c.get())
+	}
+
+	#[test]
+	fn runs_on_explicit_value() {
+		reset_count();
+		let mut p = ArgParser::new("test");
+		let n = p.default("n", 1u32, arg()).validate(counting);
+		let a = p.try_parse(argv(&["--n", "5"])).unwrap();
+		assert_eq!(n.get(&a), 5);
+		assert_eq!(count(), 1);
+	}
+
+	#[test]
+	fn runs_on_default_when_absent() {
+		reset_count();
+		let mut p = ArgParser::new("test");
+		let n = p.default("n", 5u32, arg()).validate(counting);
+		let a = p.try_parse(argv(&[])).unwrap();
+		assert_eq!(n.get(&a), 5);
+		assert_eq!(count(), 1);
+	}
+
+	#[test]
+	fn chained_validate_accumulates() {
+		reset_count();
+		let mut p = ArgParser::new("test");
+		let n = p
+			.default("n", 1u32, arg())
+			.validate(counting)
+			.validate(counting)
+			.validate(counting);
+		let a = p.try_parse(argv(&["--n", "5"])).unwrap();
+		assert_eq!(n.get(&a), 5);
+		assert_eq!(count(), 3);
+	}
+
+	#[test]
+	fn optional_validator_skipped_when_absent() {
+		reset_count();
+		let mut p = ArgParser::new("test");
+		let n = p.optional::<u32>("n", arg()).validate(counting);
+		let a = p.try_parse(argv(&[])).unwrap();
+		assert_eq!(n.get(&a), None);
+		assert_eq!(count(), 0);
+	}
+
+	#[test]
+	fn optional_validator_runs_when_present() {
+		reset_count();
+		let mut p = ArgParser::new("test");
+		let n = p.optional::<u32>("n", arg()).validate(counting);
+		let a = p.try_parse(argv(&["--n", "5"])).unwrap();
+		assert_eq!(n.get(&a), Some(5));
+		assert_eq!(count(), 1);
+	}
+
+	#[test]
+	fn repeated_validator_sees_whole_vec() {
+		LAST_LEN.with(|c| c.set(0));
+		let mut p = ArgParser::new("test");
+		let files = p.repeated::<String>("files", arg()).validate(record_len);
+		let a = p.try_parse(argv(&["--files", "a", "--files", "b", "--files", "c"])).unwrap();
+		let _ = files.get(&a);
+		assert_eq!(LAST_LEN.with(|c| c.get()), 3);
+	}
+
+	#[test]
+	fn positive_helper_runs_through_the_parser() {
+		use miniargs::validation::positive;
+
+		let mut p = ArgParser::new("test");
+		let n = p.default("n", 1u32, arg()).validate(positive);
+		let a = p.try_parse(argv(&["--n", "5"])).unwrap();
+		assert_eq!(n.get(&a), 5);
+	}
+}

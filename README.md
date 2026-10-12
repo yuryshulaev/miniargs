@@ -24,7 +24,7 @@ cargo add miniargs
 ```rust
 use std::path::PathBuf;
 
-use miniargs::{arg, args, ArgParser};
+use miniargs::{arg, args, validation::non_empty_vec, ArgParser};
 
 args! {
     #[derive(Debug)]
@@ -37,7 +37,8 @@ args! {
         verbose: bool = flag(arg().short('v').desc("Verbose output")),
         include: Vec<PathBuf> = repeated(arg().short('I').desc("Add include directory")),
         output: PathBuf = positional(arg().desc("Output file")),
-        inputs: Vec<PathBuf> = positional_variadic(arg().desc("Input files")),
+        inputs: Vec<PathBuf> = positional_variadic(arg().desc("Input files"))
+	        .validate(non_empty_vec),
     }
 }
 
@@ -46,9 +47,6 @@ fn main() {
     parser.set_version(env!("CARGO_PKG_VERSION"));
     let args = Args::parse(&mut parser);
 
-    if args.inputs.is_empty() {
-        parser.die("at least one input file is required");
-    }
     if args.include.len() > 3 {
         parser.die(format!("at most 3 --include, got {}", args.include.len()));
     }
@@ -57,7 +55,26 @@ fn main() {
 }
 ```
 
-Run with `--help` to see the generated usage text.
+Run with `--help` to see the generated usage text:
+
+```
+…/miniargs $ cargo r -q --example args -- --help
+Usage: pack [OPTIONS] <output> [inputs...]
+
+Arguments:
+  <output>                           Output file [required]
+  <inputs>...                        Input files
+
+Options:
+  -t, --target <TARGET>              Build target [required]
+  -j, --jobs <JOBS>                  Parallel jobs [default: 1]
+      --project-name <PROJECT-NAME>  Project name
+      --log <LOG>                    Log file path
+  -v, --verbose                      Verbose output
+  -I, --include <INCLUDE>            Add include directory
+  -h, --help                         Print help
+  -V, --version                      Print version
+```
 
 ## Argument shapes, by example
 
@@ -168,11 +185,39 @@ jobs: default(1u32, arg().short('j').type_name("count"))
 // error: invalid value 'abc' for --jobs (expected count): invalid digit found in string
 ```
 
-**Validation.** Runs on the constructed struct, after parsing, in plain Rust.
+## Validation
+
+Two kinds of checks: per-argument and cross-argument.
+
+**Per-argument** checks live on the key. Chain `.validate(f)`, where `f` is a `fn(&T) -> Result<(), String>` and `T` is the value type — `Vec<T>` for a repeated argument. Multiple validators accumulate; all run in order and the first failure exits with code 2.
 
 ```rust
-if args.inputs.is_empty() {
-    parser.die("at least one input file is required");
+jobs: default(1, arg().short('j')).validate(positive).validate(odd),
+```
+
+```rust
+$ pack --jobs 0
+error: invalid --jobs: must be positive
+Run with --help for usage.
+```
+
+A closure works the same way, which is useful when you want a couple of checks in one place:
+
+```rust
+jobs: default(1, arg().short('j')).validate(|v| {
+    positive(v)?;
+    odd(v)?;
+    Ok(())
+}),
+```
+
+The `validation` module provides `positive`, `non_empty`, `non_empty_vec`, and `require` (a helper for writing your own). See `examples/validation.rs`.
+
+**Cross-argument** checks stay in plain Rust after parsing. Anything that depends on more than one argument can't live on a key:
+
+```rust
+if args.config.is_some() && args.env.is_some() {
+    parser.die("--config and --env are mutually exclusive");
 }
 ```
 
@@ -245,9 +290,7 @@ let verbose: bool = verbose.get(&args);
 let output: PathBuf = output.get(&args);
 ```
 
-When you don't use the macro, the name is the first argument to each method, and the type comes from the `let` annotation at the read site: `let host: String = host.get(&args);`. Call `miniargs::kebab("file_name")` if you want the same `_` to `-` conversion the macro applies.
-
-See `examples/manual.rs`.
+See `examples/manual.rs` for a full example.
 
 ## Customizing help
 
@@ -525,7 +568,7 @@ let host: String = host.get(&args);
 let verbose: bool = verbose.get(&args);
 ```
 
-Because the type and presence policy live on the key, the compiler catches three classes of mistake at build time:
+Because the type and presence policy live on the key, the compiler catches three classes of mistakes at build time:
 
 - Asking for a flag with `get` on a value key, or vice versa (different types).
 - Reading a `u32` argument as a `String` (the key's `get` returns `u32`; assigning to a `String` fails).

@@ -13,7 +13,6 @@ use std::{
 	collections::{HashMap, HashSet},
 	ffi::{OsStr, OsString},
 	fmt::{self, Display},
-	marker::PhantomData,
 	path::PathBuf,
 };
 
@@ -299,7 +298,7 @@ pub fn arg() -> Arg {
 }
 
 // ============================================================================
-// Slot and typed keys
+// Slot and KeyMeta
 // ============================================================================
 
 #[derive(Clone)]
@@ -337,28 +336,61 @@ impl Slot {
 	}
 }
 
-pub struct RequiredKey<T> {
+/// A function that checks a parsed value. Return `Err(msg)` to reject.
+pub type Validator<V> = fn(&V) -> Result<(), String>;
+
+/// Everything every key shares, regardless of kind. `V` is the type of the
+/// value `get` returns: `T` for `RequiredKey<T>`, `OptionalKey<T>`, and
+/// `DefaultKey<T>`, and `Vec<T>` for `RepeatedKey<T>`.
+struct KeyMeta<V> {
 	slot: Slot,
 	type_name: Option<&'static str>,
-	_t: PhantomData<fn() -> T>,
+	validators: Vec<Validator<V>>,
+}
+
+impl<V> Clone for KeyMeta<V> {
+	fn clone(&self) -> Self {
+		KeyMeta {
+			slot: self.slot.clone(),
+			type_name: self.type_name,
+			validators: self.validators.clone(),
+		}
+	}
+}
+
+impl<V> KeyMeta<V> {
+	fn new(slot: Slot, type_name: Option<&'static str>) -> Self {
+		KeyMeta { slot, type_name, validators: Vec::new() }
+	}
+
+	fn check(&self, parser: &ArgParser, value: &V) {
+		for f in &self.validators {
+			if let Err(msg) = f(value) {
+				parser.die(format!("invalid {}: {msg}", self.slot.label()));
+			}
+		}
+	}
+}
+
+// ============================================================================
+// Typed keys
+// ============================================================================
+
+pub struct RequiredKey<T> {
+	meta: KeyMeta<T>,
 }
 
 pub struct OptionalKey<T> {
-	slot: Slot,
-	type_name: Option<&'static str>,
-	_t: PhantomData<fn() -> T>,
+	meta: KeyMeta<T>,
 }
 
 pub struct DefaultKey<T> {
-	slot: Slot,
+	meta: KeyMeta<T>,
 	default: T,
-	type_name: Option<&'static str>,
 }
 
 pub struct RepeatedKey<T> {
-	slot: Slot,
-	type_name: Option<&'static str>,
-	_t: PhantomData<fn() -> T>,
+	meta: KeyMeta<Vec<T>>,
 }
 
 #[derive(Clone)]
@@ -368,31 +400,48 @@ pub struct FlagKey {
 
 impl<T> Clone for RequiredKey<T> {
 	fn clone(&self) -> Self {
-		RequiredKey { slot: self.slot.clone(), type_name: self.type_name, _t: PhantomData }
+		RequiredKey { meta: self.meta.clone() }
 	}
 }
 
 impl<T> Clone for OptionalKey<T> {
 	fn clone(&self) -> Self {
-		OptionalKey { slot: self.slot.clone(), type_name: self.type_name, _t: PhantomData }
+		OptionalKey { meta: self.meta.clone() }
 	}
 }
 
 impl<T: Clone> Clone for DefaultKey<T> {
 	fn clone(&self) -> Self {
-		DefaultKey {
-			slot: self.slot.clone(),
-			default: self.default.clone(),
-			type_name: self.type_name,
-		}
+		DefaultKey { meta: self.meta.clone(), default: self.default.clone() }
 	}
 }
 
 impl<T> Clone for RepeatedKey<T> {
 	fn clone(&self) -> Self {
-		RepeatedKey { slot: self.slot.clone(), type_name: self.type_name, _t: PhantomData }
+		RepeatedKey { meta: self.meta.clone() }
 	}
 }
+
+macro_rules! key_validate {
+	($key:ident, $value:ty) => {
+		impl<T> $key<T> {
+			/// Run a check on the parsed value. On failure, the process
+			/// exits with code 2 and prints `invalid <label>: <message>`.
+			///
+			/// Multiple calls accumulate; all validators run in order and
+			/// the first failure exits.
+			pub fn validate(mut self, f: fn(&$value) -> Result<(), String>) -> Self {
+				self.meta.validators.push(f);
+				self
+			}
+		}
+	};
+}
+
+key_validate!(RequiredKey, T);
+key_validate!(OptionalKey, T);
+key_validate!(DefaultKey, T);
+key_validate!(RepeatedKey, Vec<T>);
 
 // ============================================================================
 // Parser internals
@@ -411,7 +460,7 @@ struct ArgDef {
 
 struct PositionalDef {
 	name: Cow<'static, str>,
-	desc: &'static str,
+	arg: Arg,
 	required: bool,
 	variadic: bool,
 }
@@ -557,8 +606,8 @@ impl ArgParser {
 
 	/// Print `msg` to stderr, then a `--help` hint, and exit with code 2.
 	///
-	/// Use this for validation failures after parsing has succeeded. Matches
-	/// the shape of the parser's own type-error output.
+	/// Use this for validation failures that span multiple arguments. For
+	/// single-argument checks, use `.validate()` on the key instead.
 	pub fn die(&self, msg: impl Display) -> ! {
 		eprintln!("error: {msg}");
 		eprintln!("Run with --help for usage.");
@@ -576,7 +625,7 @@ impl ArgParser {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
 		self.push_named(name.clone(), arg, true, true, false, T::values(), None, false);
-		RequiredKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
+		RequiredKey { meta: KeyMeta::new(Slot::Named(name), tn) }
 	}
 
 	/// A value argument with a default. Absent means the default.
@@ -598,7 +647,7 @@ impl ArgParser {
 			Some(default.to_string()),
 			false,
 		);
-		DefaultKey { slot: Slot::Named(name), default, type_name: tn }
+		DefaultKey { meta: KeyMeta::new(Slot::Named(name), tn), default }
 	}
 
 	/// An optional value argument. Absent means `None`.
@@ -610,7 +659,7 @@ impl ArgParser {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
 		self.push_named(name.clone(), arg, true, false, false, T::values(), None, false);
-		OptionalKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
+		OptionalKey { meta: KeyMeta::new(Slot::Named(name), tn) }
 	}
 
 	/// A repeated value argument. Every occurrence accumulates.
@@ -622,7 +671,7 @@ impl ArgParser {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
 		self.push_named(name.clone(), arg, true, false, true, T::values(), None, false);
-		RepeatedKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
+		RepeatedKey { meta: KeyMeta::new(Slot::Named(name), tn) }
 	}
 
 	/// A boolean flag. Present means `true`.
@@ -641,7 +690,7 @@ impl ArgParser {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
 		self.push_named(name.clone(), arg, true, false, false, T::values(), None, true);
-		OptionalKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
+		OptionalKey { meta: KeyMeta::new(Slot::Named(name), tn) }
 	}
 
 	/// A hidden flag. Accepted but not listed in help.
@@ -660,9 +709,10 @@ impl ArgParser {
 		let name = name.into();
 		self.push_positional(name.clone(), &arg, true, false);
 		RequiredKey {
-			slot: Slot::Positional { name, index: self.positionals.len() - 1 },
-			type_name: resolve_type_name::<T>(arg.type_name),
-			_t: PhantomData,
+			meta: KeyMeta::new(
+				Slot::Positional { name, index: self.positionals.len() - 1 },
+				resolve_type_name::<T>(arg.type_name),
+			),
 		}
 	}
 
@@ -675,9 +725,10 @@ impl ArgParser {
 		let name = name.into();
 		self.push_positional(name.clone(), &arg, false, false);
 		OptionalKey {
-			slot: Slot::Positional { name, index: self.positionals.len() - 1 },
-			type_name: resolve_type_name::<T>(arg.type_name),
-			_t: PhantomData,
+			meta: KeyMeta::new(
+				Slot::Positional { name, index: self.positionals.len() - 1 },
+				resolve_type_name::<T>(arg.type_name),
+			),
 		}
 	}
 
@@ -694,9 +745,10 @@ impl ArgParser {
 		);
 		self.push_positional(name.clone(), &arg, false, true);
 		RepeatedKey {
-			slot: Slot::Positional { name, index: self.positionals.len() - 1 },
-			type_name: resolve_type_name::<T>(arg.type_name),
-			_t: PhantomData,
+			meta: KeyMeta::new(
+				Slot::Positional { name, index: self.positionals.len() - 1 },
+				resolve_type_name::<T>(arg.type_name),
+			),
 		}
 	}
 
@@ -719,8 +771,7 @@ impl ArgParser {
 				"required positionals must be declared before optional ones"
 			);
 		}
-		self.positionals
-			.push(PositionalDef { name, desc: arg.desc, required, variadic });
+		self.positionals.push(PositionalDef { name, arg: *arg, required, variadic });
 	}
 
 	#[allow(clippy::too_many_arguments)]
@@ -1084,7 +1135,7 @@ impl ArgParser {
 				} else {
 					format!("<{}>", p.name)
 				};
-				let mut right = p.desc.to_string();
+				let mut right = p.arg.desc.to_string();
 				if p.required {
 					push_tag(&mut right, "[required]");
 				}
@@ -1186,46 +1237,60 @@ fn parse_or_exit<T: ParseArg>(
 
 impl<T: ParseArg> RequiredKey<T> {
 	pub fn get(&self, args: &ParsedArgs<'_>) -> T {
-		let raw = self
-			.slot
-			.single(args)
-			.unwrap_or_else(|| panic!("programmer error: {} not provided", self.slot.label()));
-		parse_or_exit(args.parser, raw, &self.slot, self.type_name)
+		let raw =
+			self.meta.slot.single(args).unwrap_or_else(|| {
+				panic!("programmer error: {} not provided", self.meta.slot.label())
+			});
+		let value = parse_or_exit(args.parser, raw, &self.meta.slot, self.meta.type_name);
+		self.meta.check(args.parser, &value);
+		value
 	}
 }
 
 impl<T: ParseArg + Clone> DefaultKey<T> {
 	pub fn get(&self, args: &ParsedArgs<'_>) -> T {
-		match self.slot.single(args) {
-			Some(raw) => parse_or_exit(args.parser, raw, &self.slot, self.type_name),
+		let value = match self.meta.slot.single(args) {
+			Some(raw) => parse_or_exit(args.parser, raw, &self.meta.slot, self.meta.type_name),
 			None => self.default.clone(),
-		}
+		};
+		self.meta.check(args.parser, &value);
+		value
 	}
 }
 
 impl<T: ParseArg> OptionalKey<T> {
 	pub fn get(&self, args: &ParsedArgs<'_>) -> Option<T> {
-		self.slot
+		let value = self
+			.meta
+			.slot
 			.single(args)
-			.map(|raw| parse_or_exit(args.parser, raw, &self.slot, self.type_name))
+			.map(|raw| parse_or_exit(args.parser, raw, &self.meta.slot, self.meta.type_name));
+		if let Some(v) = &value {
+			self.meta.check(args.parser, v);
+		}
+		value
 	}
 }
 
 impl<T: ParseArg> RepeatedKey<T> {
 	pub fn get(&self, args: &ParsedArgs<'_>) -> Vec<T> {
-		self.slot
+		let values: Vec<T> = self
+			.meta
+			.slot
 			.all(args)
 			.iter()
-			.map(|raw| parse_or_exit(args.parser, raw, &self.slot, self.type_name))
-			.collect()
+			.map(|raw| parse_or_exit(args.parser, raw, &self.meta.slot, self.meta.type_name))
+			.collect();
+		self.meta.check(args.parser, &values);
+		values
 	}
 
 	pub fn len(&self, args: &ParsedArgs<'_>) -> usize {
-		self.slot.all(args).len()
+		self.meta.slot.all(args).len()
 	}
 
 	pub fn is_empty(&self, args: &ParsedArgs<'_>) -> bool {
-		self.slot.all(args).is_empty()
+		self.meta.slot.all(args).is_empty()
 	}
 }
 
@@ -1244,15 +1309,18 @@ impl FlagKey {
 /// ```ignore
 /// let args = parse_args!(parser; Args {
 ///     host: required(arg().short('H').desc("Host")),
-///     verbose: flag(arg().short('v')),
+///     jobs: default(1, arg().short('j')).validate(positive),
 /// });
 /// ```
 ///
 /// The struct field name becomes the CLI argument name, converted to
 /// kebab-case: `file_name` becomes `--file-name`. Raw identifiers lose the
 /// `r#` prefix: `r#move` becomes `--move`. The struct field type fixes the
-/// parser's type parameter, so no turbofish is needed. Each argument is
-/// declared once.
+/// parser's type parameter, so no turbofish is needed.
+///
+/// Configuration methods chained after the call are appended to the
+/// registration expression, so `default(1, arg()).validate(positive)`
+/// expands to `parser.default(...).validate(positive)`.
 ///
 /// For tests, use the explicit-argv form:
 ///
@@ -1264,24 +1332,32 @@ impl FlagKey {
 /// body from referring to a caller binding by name.
 #[macro_export]
 macro_rules! parse_args {
-	($parser:ident; $T:ident { $($field:ident : $method:ident ( $($tail:tt)* )),* $(,)? }) => {
+	($parser:ident; $T:ident {
+		$($field:ident : $method:ident ( $($tail:tt)* ) $(. $chain:ident ( $($cargs:tt)* ))* ),* $(,)?
+	}) => {
 		$crate::parse_args!($parser, ::std::env::args_os(); $T {
-			$($field: $method ( $($tail)* )),*
+			$($field: $method ( $($tail)* ) $(. $chain ( $($cargs)* ))*),*
 		})
 	};
-	($parser:ident, $argv:expr; $T:ident { $($field:ident : $method:ident ( $($tail:tt)* )),* $(,)? }) => {{
+	($parser:ident, $argv:expr; $T:ident {
+		$($field:ident : $method:ident ( $($tail:tt)* ) $(. $chain:ident ( $($cargs:tt)* ))* ),* $(,)?
+	}) => {{
 		$(
 			// The struct field name becomes the CLI name, converted to
 			// kebab-case: `file_name` → `--file-name`.
 			let $field = $parser.$method(
 				$crate::kebab(stringify!($field)),
 				$($tail)*
-			);
+			)$(.$chain($($cargs)*))*;
 		)*
 		let args = $parser.parse($argv);
 		$T { $($field: $field.get(&args),)* }
 	}};
 }
+
+// ============================================================================
+// args!
+// ============================================================================
 
 /// Define a struct and generate `parse` / `parse_from` constructors for it.
 ///
@@ -1300,19 +1376,20 @@ macro_rules! parse_args {
 /// `--file-name`, `r#move` → `--move`); the field type fixes the builder's
 /// type parameter.
 ///
-/// - `PackArgs::parse(parser)` reads `std::env::args_os()`.
-/// - `PackArgs::parse_from(parser, argv)` reads an explicit iterator, for
-///   tests. `argv` must start with the program name.
+/// - `PackArgs::parse(&mut parser)` reads `std::env::args_os()`.
+/// - `PackArgs::parse_from(&mut parser, argv)` reads an explicit iterator,
+///   for tests. `argv` must start with the program name.
 ///
-/// The parser is taken by value, so configure it first (`set_version`,
-/// `set_about`, `set_footer`) and then hand it over. No attributes are added
-/// by the macro; `$(#[$meta])*` is re-emitted on the generated struct.
+/// The parser is borrowed, so it stays usable after parsing — `parser.die(...)`
+/// for validation failures, or a second parse from the same configured
+/// parser. The macro adds no attributes; `$(#[$meta])*` is re-emitted on the
+/// generated struct.
 #[macro_export]
 macro_rules! args {
 	(
 		$(#[$meta:meta])*
 		$vis:vis struct $T:ident {
-			$($field_vis:vis $name:ident : $ty:ty = $method:ident ( $($tail:tt)* )),* $(,)?
+			$($field_vis:vis $name:ident : $ty:ty = $method:ident ( $($tail:tt)* ) $(. $chain:ident ( $($cargs:tt)* ))*),* $(,)?
 		}
 	) => {
 		$(#[$meta])*
@@ -1326,18 +1403,57 @@ macro_rules! args {
 				Self::parse_from(parser, ::std::env::args_os())
 			}
 
-			/// Parse from an explicit argv. Useful in tests.
+			/// Parse from an explicit argv. `argv` must start with the
+			/// program name.
 			pub fn parse_from<I>(parser: &mut $crate::ArgParser, argv: I) -> Self
 			where
 				I: IntoIterator,
 				I::Item: Into<::std::ffi::OsString>,
 			{
-				$crate::parse_args!(parser, argv; $T {
-					$($name: $method ( $($tail)* )),*
-				})
+				$(
+					let $name = parser.$method(
+						$crate::kebab(stringify!($name)),
+						$($tail)*
+					)$(.$chain($($cargs)*))*;
+				)*
+				let args = parser.parse(argv);
+				Self { $($name: $name.get(&args),)* }
 			}
 		}
 	};
+}
+
+// ============================================================================
+// Validation helpers
+// ============================================================================
+
+/// Ready-made checks for [`RequiredKey::validate`] and friends. Each takes a
+/// reference to the parsed value and returns `Err(message)` on failure.
+pub mod validation {
+	/// Build a `Result` from a condition. Helper for writing validators.
+	pub fn require(cond: bool, msg: &str) -> Result<(), String> {
+		cond.then_some(()).ok_or_else(|| msg.into())
+	}
+
+	/// Greater than `T::default()` — 0 for numeric types. Applies to anything
+	/// with a `Default` and an ordering; for non-numeric types the meaning is
+	/// whatever `T::default()` means there.
+	pub fn positive<T: PartialOrd + Default>(v: &T) -> Result<(), String> {
+		require(*v > T::default(), "must be positive")
+	}
+
+	/// `&String` rather than `&str`: `.validate()` requires `fn(&String)` for
+	/// `String` fields, and `fn(&str)` doesn't coerce to that.
+	#[allow(clippy::ptr_arg)]
+	pub fn non_empty(s: &String) -> Result<(), String> {
+		require(!s.is_empty(), "must not be empty")
+	}
+
+	/// `&Vec<T>` rather than `&[T]`: same reason.
+	#[allow(clippy::ptr_arg)]
+	pub fn non_empty_vec<T>(v: &Vec<T>) -> Result<(), String> {
+		require(!v.is_empty(), "at least one value is required")
+	}
 }
 
 // ============================================================================
