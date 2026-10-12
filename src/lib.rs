@@ -400,6 +400,7 @@ struct ArgDef {
 	repeated: bool,
 	values: Vec<&'static str>,
 	default_display: Option<String>,
+	hidden: bool,
 }
 
 struct PositionalDef {
@@ -567,7 +568,7 @@ impl ArgParser {
 	) -> RequiredKey<T> {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
-		self.push_named(name.clone(), arg, true, true, false, T::values(), None);
+		self.push_named(name.clone(), arg, true, true, false, T::values(), None, false);
 		RequiredKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
 	}
 
@@ -587,6 +588,7 @@ impl ArgParser {
 			false,
 			T::values(),
 			Some(default.to_string()),
+			false,
 		);
 		DefaultKey { slot: Slot::Named(name), default, type_name: tn }
 	}
@@ -598,7 +600,7 @@ impl ArgParser {
 	) -> OptionalKey<T> {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
-		self.push_named(name.clone(), arg, true, false, false, T::values(), None);
+		self.push_named(name.clone(), arg, true, false, false, T::values(), None, false);
 		OptionalKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
 	}
 
@@ -609,13 +611,13 @@ impl ArgParser {
 	) -> RepeatedKey<T> {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
-		self.push_named(name.clone(), arg, true, false, true, T::values(), None);
+		self.push_named(name.clone(), arg, true, false, true, T::values(), None, false);
 		RepeatedKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
 	}
 
 	pub fn flag(&mut self, name: impl Into<Cow<'static, str>>, arg: Arg) -> FlagKey {
 		let name = name.into();
-		self.push_named(name.clone(), arg, false, false, false, Vec::new(), None);
+		self.push_named(name.clone(), arg, false, false, false, Vec::new(), None, false);
 		FlagKey { name }
 	}
 
@@ -665,6 +667,24 @@ impl ArgParser {
 		}
 	}
 
+	/// A hidden optional value argument. Accepted on the command line but not listed in `--help`.
+	pub fn hidden<T: ParseArg>(
+		&mut self,
+		name: impl Into<Cow<'static, str>>,
+		arg: Arg,
+	) -> OptionalKey<T> {
+		let name = name.into();
+		let tn = resolve_type_name::<T>(arg.type_name);
+		self.push_named(name.clone(), arg, true, false, false, T::values(), None, true);
+		OptionalKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
+	}
+
+	pub fn hidden_flag(&mut self, name: impl Into<Cow<'static, str>>, arg: Arg) -> FlagKey {
+		let name = name.into();
+		self.push_named(name.clone(), arg, false, false, false, Vec::new(), None, true);
+		FlagKey { name }
+	}
+
 	fn push_positional(
 		&mut self,
 		name: Cow<'static, str>,
@@ -698,6 +718,7 @@ impl ArgParser {
 		repeated: bool,
 		values: Vec<&'static str>,
 		default_display: Option<String>,
+		hidden: bool,
 	) {
 		assert!(!name.is_empty(), "argument name must not be empty");
 		assert!(!self.defs.iter().any(|d| d.name == name), "duplicate argument name: {name}");
@@ -725,6 +746,7 @@ impl ArgParser {
 			repeated,
 			values,
 			default_display,
+			hidden,
 		});
 	}
 
@@ -1059,6 +1081,7 @@ impl ArgParser {
 		let mut rows: Vec<(String, String)> = self
 			.defs
 			.iter()
+			.filter(|d| !d.hidden)
 			.map(|d| {
 				let mut left = if d.arg.short == '-' {
 					format!("    --{}", d.name)

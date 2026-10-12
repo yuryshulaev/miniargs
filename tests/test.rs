@@ -248,6 +248,28 @@ fn duplicate_single_value_errors() {
 }
 
 // ---------------------------------------------------------------------------
+// Hidden arguments
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hidden_value_is_accepted_and_unlisted() {
+	let mut p = ArgParser::new("test");
+	let backend = p.hidden::<String>("backend", Arg::new());
+	let a = p.try_parse(argv(&["--backend", "x"])).unwrap();
+	assert_eq!(backend.get(&a), Some("x".to_string()));
+	assert!(!p.help().contains("backend"));
+}
+
+#[test]
+fn hidden_flag_is_accepted_and_unlisted() {
+	let mut p = ArgParser::new("test");
+	let dump = p.hidden_flag("dump-tokens", Arg::new());
+	let a = p.try_parse(argv(&["--dump-tokens"])).unwrap();
+	assert!(dump.get(&a));
+	assert!(!p.help().contains("dump"));
+}
+
+// ---------------------------------------------------------------------------
 // Choice / enumerated values
 // ---------------------------------------------------------------------------
 

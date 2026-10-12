@@ -277,7 +277,7 @@ Use it like any other type:
 let color = parser.default("color", Color::Auto, Arg::new().desc("Color mode"));
 ```
 
-The value strings appear once, in the macro call. Everything else — the enum, `Choice`, `Display`, the help hint, the "requires a value" error — derives from that one list.
+The value strings appear once, in the macro call. Everything else — the enum, `Choice`, `Display`, the help hint, the "requires a value" error — derives from that one list.
 
 ```
 $ pack --color wef
