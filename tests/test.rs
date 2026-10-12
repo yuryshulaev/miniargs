@@ -893,6 +893,24 @@ fn dispatcher_help_command_appears_in_help() {
 	assert!(h.contains("Print this message"), "{h}");
 }
 
+#[test]
+fn run_with_dispatches_to_handler() {
+	use std::cell::Cell;
+
+	thread_local! {
+		static RAN: Cell<bool> = Cell::new(false);
+	}
+
+	fn mark(_prog: &str, _argv: &[OsString]) {
+		RAN.with(|c| c.set(true));
+	}
+
+	let mut d = Dispatcher::new("test");
+	d.command("go", mark, "Run");
+	d.run_with(["test", "go"]);
+	assert!(RAN.with(|c| c.get()));
+}
+
 // ---------------------------------------------------------------------------
 // Non-UTF-8 handling (Unix only)
 //

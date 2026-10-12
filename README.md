@@ -270,8 +270,6 @@ let args = parse_args!(parser, argv; Args {
 });
 ```
 
-`std::env::args_os()` is process-global and unsafe to mutate in parallel tests, so the explicit-argv form is the one you want in `#[test]` functions.
-
 ## Without macros
 
 Everything works without either macro. Call the same methods directly, then read each key:
@@ -470,7 +468,7 @@ For external types, wrap them in a newtype and impl `ParseArg` on the wrapper. T
 
 Numeric and other primitive types go through `FromStr` via the `impl_parse_arg_from_str!` macro.
 
-The one limitation: the inline `--name=<value>` form requires the whole argument to be UTF-8, because splitting an `OsStr` at `=` without `unsafe` is not possible on stable Rust. Use `--name <value>` for non-UTF-8 values. The error message says exactly this:
+One limitation: the inline `--name=<value>` form requires the whole argument to be UTF-8. Splitting an `OsStr` at `=` requires either `unsafe` or platform-specific APIs, and miniargs avoids both. Use `--name <value>` for non-UTF-8 values. The error message says exactly this:
 
 ```
 error: non-UTF-8 value in --config=…; use `--config VALUE` instead
@@ -525,7 +523,7 @@ fn main() {
     dispatcher.command("add", cmd_add, "Add files");
     dispatcher.command("remove", cmd_remove, "Remove files");
     dispatcher.help_command("help", "Print help");
-    dispatcher.run(std::env::args_os());
+	dispatcher.run();
 }
 
 fn cmd_add(prog: &str, argv: &[OsString]) {
@@ -535,7 +533,7 @@ fn cmd_add(prog: &str, argv: &[OsString]) {
 }
 ```
 
-`argv[0]` is the command name, which the handler's parser skips as `argv[0]`, so `parse_args!` works unchanged.
+`run()` reads `std::env::args_os()`. `run_with(argv)` takes an explicit argv (useful for testing).
 
 - `myprog --help` prints the dispatcher's help, exits 0.
 - `myprog add --help` prints the subcommand's help, exits 0.

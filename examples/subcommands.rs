@@ -24,7 +24,9 @@ fn main() {
 	dispatcher.command("add", cmd_add, "Add files to a collection");
 	dispatcher.command("remove", cmd_remove, "Remove a collection");
 	dispatcher.help_command("help", "Print help");
-	dispatcher.run(std::env::args_os());
+	dispatcher.run();
+	// In tests, pass an explicit argv instead:
+	// dispatcher.run_with(["myprog", "add", "-n", "docs"]);
 }
 
 fn cmd_add(prog: &str, argv: &[OsString]) {

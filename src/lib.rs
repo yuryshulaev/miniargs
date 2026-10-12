@@ -1506,13 +1506,18 @@ impl Dispatcher {
 		self
 	}
 
-	/// Run `argv[1]` as a subcommand name.
+	/// Dispatch on `std::env::args_os()`.
+	pub fn run(&self) {
+		self.run_with(std::env::args_os());
+	}
+
+	/// Dispatch on an explicit argv. `argv` must start with the program name.
 	///
 	/// - no argument, `-h`, `--help`, `--`, or the registered help command
 	///   → prints help, exits 0
 	/// - known command → calls its handler, returns normally
 	/// - unknown → prints error and help, exits 2
-	pub fn run<I>(&self, argv: I)
+	pub fn run_with<I>(&self, argv: I)
 	where
 		I: IntoIterator,
 		I::Item: Into<OsString>,
