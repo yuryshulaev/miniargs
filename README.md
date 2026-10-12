@@ -89,7 +89,7 @@ let args = {
 };
 ```
 
-`kebab("file_name")` returns `"file-name"`, so the argument is `--file-name` on the command line while the struct field stays `file_name` in Rust. Names without underscores pass through unchanged.
+`kebab("file_name")` returns `"file-name"`, so the argument is `--file-name` on the command line while the struct field stays `file_name` in Rust. Names without underscores pass through unchanged. Raw identifiers (`r#move`) lose the `r#` prefix, so `r#move` becomes `--move`.
 
 The struct field type drives the parser type (`file_name: String` instantiates `required::<String>`), so nothing is written twice and there are no turbofish annotations.
 
@@ -224,6 +224,177 @@ if args.inputs.is_empty() {
 
 `parser.die(msg)` prints `error: {msg}` followed by a `--help` hint and exits with code 2.
 
+## Enumerated values
+
+Implement `Choice` for a closed set of values. The parser learns the accepted names, uses them for error messages, and lists them in `--help`:
+
+```rust
+#[derive(Debug, Clone, Copy)]
+enum Color { Auto, Always, Never }
+
+impl Choice for Color {
+    const ALL: &'static [Color] = all_variants!(Color; Auto, Always, Never);
+
+    fn name(&self) -> &'static str {
+        match self {
+            Color::Auto => "auto",
+            Color::Always => "always",
+            Color::Never => "never",
+        }
+    }
+}
+
+impl std::fmt::Display for Color {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+```
+
+Use it like any other type:
+
+```rust
+let color = parser.default("color", Color::Auto, Arg::new().desc("Color mode"));
+```
+
+The value strings appear once, in `name()`. Everything else — parsing, the help hint, the "requires a value" error — derives from `ALL` and `name()`.
+
+```
+$ pack --color wef
+error: invalid value 'wef' for --color (one of: auto, always, never)
+
+$ pack --color
+error: --color requires a value (one of: auto, always, never)
+
+$ pack --help
+      --color <COLOR>  Color mode [auto|always|never] [default: auto]
+```
+
+The variant list is written twice — once in the enum, once in `all_variants!`. The macro expands to an exhaustive `match`, so `ALL` won't build until every variant is listed:
+
+```
+error[E0004]: non-exhaustive patterns: `Color::New` not covered
+  --> src/main.rs:13:36
+   |
+13 |     const ALL: &'static [Color] = all_variants!(Color; Auto, Always, Never);
+   |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+The macro works for unit variants only — a variant with a payload doesn't fit the trait's model of a closed set of names.
+
+`Choice` requires `Copy`, `Display`, and `'static`. Implementing it gives you a `ParseArg` impl for free via a blanket impl. The default `from_name` is a linear scan over `ALL`, comparing `name()`; override it with a `match` for large enums.
+
+## Custom types
+
+For types without a fixed value set, implement `ParseArg` directly. A newtype with validation is the typical case:
+
+```rust
+use std::{ffi::OsStr, fmt};
+
+use miniargs::{Arg, ArgParser, ParseArg};
+
+/// A port number. `ParseArg` rejects zero, so values that come from the
+/// command line are always valid.
+#[derive(Clone, Copy)]
+struct Port(u16);
+
+impl ParseArg for Port {
+    fn parse_arg(s: &OsStr) -> Result<Self, String> {
+        let s = s.to_str().ok_or("value is not valid UTF-8")?;
+        let n: u16 = s.parse().map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("port must be greater than zero".into());
+        }
+        Ok(Port(n))
+    }
+}
+
+impl fmt::Display for Port {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+```
+
+Use it like any other type:
+
+```rust
+let port = parser.default(
+    "port",
+    Port(8080),
+    Arg::new().short('p').desc("Port to listen on").type_name("port"),
+);
+// ...
+let port: Port = port.get(&args);
+```
+
+The error string you return becomes the message after the colon:
+
+```
+$ pack --port 0
+error: invalid value '0' for --port (expected port): port must be greater than zero
+```
+
+Two requirements, both only for `default`:
+
+- **`Clone`** — the default is cloned when the argument is absent.
+- **`Display`** — the default is rendered in help as `[default: 8080]`.
+
+`required` and `optional` need neither. If you'd rather not add them, use `optional` and unwrap at the read site:
+
+```rust
+let port = parser.optional("port", Arg::new().short('p').desc("Port to listen on"));
+let port: Port = port.get(&args).unwrap_or(Port(8080));
+```
+
+The help no longer shows the default, but the wrapper stays minimal.
+
+`.type_name("port")` is optional — without it the message says `(expected Port)`, and `.type_name_hidden()` drops the `(expected ...)` clause entirely.
+
+For external types, wrap them in a newtype and impl `ParseArg` on the wrapper. The orphan rule prevents implementing `ParseArg` on a foreign type directly.
+
+## Non-UTF-8 correctness
+
+`std::env::args_os()` yields `OsString`, and `miniargs` stores values as `OsString` throughout. Three `ParseArg` impls handle non-UTF-8:
+
+- `OsString` — always succeeds, holds raw bytes.
+- `PathBuf` — wraps the `OsString`, no UTF-8 conversion.
+- `String` — requires valid UTF-8, errors otherwise.
+
+Numeric and other primitive types go through `FromStr` via the `impl_parse_arg_from_str!` macro.
+
+The one limitation: the inline `--name=<value>` form requires the whole argument to be UTF-8, because splitting an `OsStr` at `=` without `unsafe` is not possible on stable Rust. Use `--name <value>` for non-UTF-8 values. The error message says exactly this:
+
+```
+error: non-UTF-8 value in --config=…; use `--config VALUE` instead
+```
+
+## Error handling
+
+User errors are printed to stderr and exit with code 2. Two shapes:
+
+```
+$ pack --jobs abc
+error: invalid value 'abc' for --jobs (expected count): invalid digit found in string
+Run with --help for usage.
+
+$ pack out.bin
+error: at least one input file is required
+Run with --help for usage.
+```
+
+Structural errors (unknown option, missing required, unexpected positional) print the full usage text instead:
+
+```
+$ pack --bogus
+error: unknown option --bogus
+
+Usage: pack [OPTIONS] <output> [inputs...]
+...
+```
+
+Programmer errors (calling `get` on an unregistered key, registering a duplicate argument, declaring a required positional after an optional one) panic with a descriptive message. These are bugs in your code, not user input, and only appear during development.
+
 ## Subcommands
 
 Dispatch on `argv[1]` with `Dispatcher`. Each command gets its own `ArgParser` and builds its own struct; the dispatcher just routes and generates the top-level help.
@@ -312,95 +483,6 @@ Because the type and presence policy live on the key, the compiler catches three
 - A typo in the variable name (`hots.get(&args)` is `cannot find value`).
 
 The only thing that isn't checked at compile time is registration, and even that is closed off: the only way to construct a key is via a registration method, which registers the argument as a side effect.
-
-## Custom types
-
-Implement `ParseArg` for anything the parser should accept. Enums are the usual case:
-
-```rust
-#[derive(Debug, Clone, Copy)]
-enum Color { Auto, Always, Never }
-
-impl ParseArg for Color {
-    fn parse_arg(s: &OsStr) -> Result<Self, String> {
-        match s.to_str() {
-            Some("auto") => Ok(Color::Auto),
-            Some("always") => Ok(Color::Always),
-            Some("never") => Ok(Color::Never),
-            Some(other) => Err(format!("expected auto, always, or never, got '{other}'")),
-            None => Err("value is not valid UTF-8".to_string()),
-        }
-    }
-}
-
-impl std::fmt::Display for Color {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Color::Auto => write!(f, "auto"),
-            Color::Always => write!(f, "always"),
-            Color::Never => write!(f, "never"),
-        }
-    }
-}
-```
-
-Use it like any other type:
-
-```rust
-let color = parser.default(
-    "color",
-    Color::Auto,
-    Arg::new().desc("Color mode").type_name_hidden(),
-);
-// --color auto | --color always | --color never
-// error: invalid value 'blue' for --color: expected auto, always, or never, got 'blue'
-```
-
-The error string you return becomes the message after the colon. `type_name_hidden()` drops the `(expected Color)` prefix so the enum's own message is the whole story.
-
-`default` needs `Display` because it renders the default in help. `optional` and `required` don't. For external enums, wrap them in a newtype and impl both traits on the wrapper.
-
-## Non-UTF-8 correctness
-
-`std::env::args_os()` yields `OsString`, and `miniargs` stores values as `OsString` throughout. Three `ParseArg` impls handle non-UTF-8:
-
-- `OsString` — always succeeds, holds raw bytes.
-- `PathBuf` — wraps the `OsString`, no UTF-8 conversion.
-- `String` — requires valid UTF-8, errors otherwise.
-
-Numeric and other primitive types go through `FromStr` via the `impl_parse_arg_from_str!` macro. You can add impls for your own types by implementing `ParseArg`.
-
-The one limitation: the inline `--name=<value>` form requires the whole argument to be UTF-8, because splitting an `OsStr` at `=` without `unsafe` is not possible on stable Rust. Use `--name <value>` for non-UTF-8 values. The error message says exactly this:
-
-```
-error: non-UTF-8 value in --config=…; use `--config VALUE` instead
-```
-
-## Error handling
-
-User errors are printed to stderr and exit with code 2. Two shapes:
-
-```
-$ pack --jobs abc
-error: invalid value 'abc' for --jobs (expected count): invalid digit found in string
-Run with --help for usage.
-
-$ pack out.bin
-error: at least one input file is required
-Run with --help for usage.
-```
-
-Structural errors (unknown option, missing required, unexpected positional) print the full usage text instead:
-
-```
-$ pack --bogus
-error: unknown option --bogus
-
-Usage: pack [OPTIONS] <output> [inputs...]
-...
-```
-
-Programmer errors (calling `get` on an unregistered key, registering a duplicate argument, declaring a required positional after an optional one) panic with a descriptive message. These are bugs in your code, not user input, and only appear during development.
 
 ## What's not supported
 

@@ -23,6 +23,12 @@ use std::{
 
 pub trait ParseArg: Sized {
 	fn parse_arg(s: &OsStr) -> Result<Self, String>;
+
+	/// Accepted values, shown in "requires a value" errors and help.
+	/// Empty by default; override for closed sets like enums.
+	fn values() -> Vec<&'static str> {
+		Vec::new()
+	}
 }
 
 impl ParseArg for String {
@@ -63,20 +69,64 @@ impl_parse_arg_from_str!(
 );
 
 // ============================================================================
+// Choice
+// ============================================================================
+
+/// A closed set of values, enumerated by `ALL` and rendered by `name`.
+///
+/// Implementing this gives you a `ParseArg` impl for free, and wires the
+/// value list into "requires a value" errors and help output.
+pub trait Choice: Sized + Copy + Display + 'static {
+	/// Every variant, in the order they should appear in help.
+	const ALL: &'static [Self];
+
+	/// The CLI spelling of this variant.
+	fn name(&self) -> &'static str;
+
+	/// Look up a variant by its CLI spelling. The default is a linear scan
+	/// over `ALL`, comparing `name()`. Override with a `match` for O(1)
+	/// lookup on large enums.
+	fn from_name(s: &str) -> Option<Self> {
+		Self::ALL.iter().copied().find(|c| c.name() == s)
+	}
+}
+
+impl<T: Choice> ParseArg for T {
+	fn parse_arg(s: &OsStr) -> Result<Self, String> {
+		let s = s.to_str().ok_or_else(|| "value is not valid UTF-8".to_string())?;
+		Self::from_name(s).ok_or_else(|| format!("'{s}' is not a valid choice"))
+	}
+
+	fn values() -> Vec<&'static str> {
+		Self::ALL.iter().map(|c| c.name()).collect()
+	}
+}
+
+#[macro_export]
+macro_rules! all_variants {
+	($t:ident; $($v:ident),+ $(,)?) => {{
+		// Exhaustive match: adding a variant to `$t` breaks compilation
+		// here, forcing you to update `ALL`.
+		#[allow(dead_code, clippy::match_single_binding)]
+		const fn _exhaustive(c: $t) {
+			match c {
+				$($t::$v => {})+
+			}
+		}
+		&[$($t::$v),+]
+	}};
+}
+
+// ============================================================================
 // TypeName
 // ============================================================================
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub enum TypeName {
+	#[default]
 	Auto,
 	Hidden,
 	Manual(&'static str),
-}
-
-impl Default for TypeName {
-	fn default() -> Self {
-		TypeName::Auto
-	}
 }
 
 fn short_type_name<T>() -> &'static str {
@@ -99,10 +149,11 @@ fn resolve_type_name<T>(tn: TypeName) -> Option<&'static str> {
 /// Convert `snake_case` to `kebab-case`, borrowing for names without `_`.
 ///
 /// `parse_args!` uses this to turn a struct field like `file_name` into the
-/// CLI argument `--file-name`. Call it directly if you're using the manual
-/// API and want the same convention.
+/// CLI argument `--file-name`. Raw identifiers (`r#move`) lose the `r#`
+/// prefix, so `r#move` becomes `--move`. Call it directly if you're using
+/// the manual API and want the same convention.
 pub fn kebab(s: &'static str) -> Cow<'static, str> {
-	// `r#` is the raw-identifier prefix; strip it so `r#move` → `--move`.
+	// `r#` is the raw-identifier prefix; strip it so `r#move` → `move`.
 	let s = s.strip_prefix("r#").unwrap_or(s);
 	if s.contains('_') {
 		Cow::Owned(s.replace('_', "-"))
@@ -287,6 +338,7 @@ struct ArgDef {
 	takes_value: bool,
 	required: bool,
 	repeated: bool,
+	values: Vec<&'static str>,
 	default_display: Option<String>,
 }
 
@@ -441,7 +493,7 @@ impl ArgParser {
 	) -> RequiredKey<T> {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
-		self.push_named(name.clone(), arg, true, true, false, None);
+		self.push_named(name.clone(), arg, true, true, false, T::values(), None);
 		RequiredKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
 	}
 
@@ -453,7 +505,15 @@ impl ArgParser {
 	) -> DefaultKey<T> {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
-		self.push_named(name.clone(), arg, true, false, false, Some(default.to_string()));
+		self.push_named(
+			name.clone(),
+			arg,
+			true,
+			false,
+			false,
+			T::values(),
+			Some(default.to_string()),
+		);
 		DefaultKey { slot: Slot::Named(name), default, type_name: tn }
 	}
 
@@ -464,7 +524,7 @@ impl ArgParser {
 	) -> OptionalKey<T> {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
-		self.push_named(name.clone(), arg, true, false, false, None);
+		self.push_named(name.clone(), arg, true, false, false, T::values(), None);
 		OptionalKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
 	}
 
@@ -475,13 +535,13 @@ impl ArgParser {
 	) -> RepeatedKey<T> {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
-		self.push_named(name.clone(), arg, true, false, true, None);
+		self.push_named(name.clone(), arg, true, false, true, T::values(), None);
 		RepeatedKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
 	}
 
 	pub fn flag(&mut self, name: impl Into<Cow<'static, str>>, arg: Arg) -> FlagKey {
 		let name = name.into();
-		self.push_named(name.clone(), arg, false, false, false, None);
+		self.push_named(name.clone(), arg, false, false, false, Vec::new(), None);
 		FlagKey { name }
 	}
 
@@ -554,6 +614,7 @@ impl ArgParser {
 			.push(PositionalDef { name, desc: arg.desc, required, variadic });
 	}
 
+	#[allow(clippy::too_many_arguments)]
 	fn push_named(
 		&mut self,
 		name: Cow<'static, str>,
@@ -561,6 +622,7 @@ impl ArgParser {
 		takes_value: bool,
 		required: bool,
 		repeated: bool,
+		values: Vec<&'static str>,
 		default_display: Option<String>,
 	) {
 		assert!(!name.is_empty(), "argument name must not be empty");
@@ -581,8 +643,15 @@ impl ArgParser {
 				"alias '{alias}' collides with an existing argument"
 			);
 		}
-		self.defs
-			.push(ArgDef { name, arg, takes_value, required, repeated, default_display });
+		self.defs.push(ArgDef {
+			name,
+			arg,
+			takes_value,
+			required,
+			repeated,
+			values,
+			default_display,
+		});
 	}
 
 	// --- parsing -------------------------------------------------------
@@ -774,9 +843,14 @@ impl ArgParser {
 			Some(c) => format!("-{c}"),
 			None => format!("--{}", def.name),
 		};
-		let next = it
-			.next()
-			.ok_or_else(|| ParseError::User(format!("{flag_form} requires a value")))?;
+		let next = it.next().ok_or_else(|| {
+			let hint = if def.values.is_empty() {
+				String::new()
+			} else {
+				format!(" (one of: {})", def.values.join(", "))
+			};
+			ParseError::User(format!("{flag_form} requires a value{hint}"))
+		})?;
 		if next == "--" {
 			return Err(ParseError::User(format!("{flag_form} requires a value, found `--`")));
 		}
@@ -834,7 +908,7 @@ impl ArgParser {
 	fn find_long(&self, name: &str) -> Option<&ArgDef> {
 		self.defs
 			.iter()
-			.find(|d| d.name.as_ref() == name || d.arg.aliases.iter().any(|a| *a == name))
+			.find(|d| d.name.as_ref() == name || d.arg.aliases.contains(&name))
 	}
 
 	fn find_short(&self, c: char) -> Option<&ArgDef> {
@@ -912,6 +986,9 @@ impl ArgParser {
 					left.push_str(&format!(" <{}>", d.name.to_uppercase()));
 				}
 				let mut right = d.arg.desc.to_string();
+				if !d.values.is_empty() {
+					push_tag(&mut right, &format!("[{}]", d.values.join("|")));
+				}
 				if d.required {
 					push_tag(&mut right, "[required]");
 				} else if let Some(def) = &d.default_display {
@@ -925,6 +1002,15 @@ impl ArgParser {
 			rows.push(("-V, --version".into(), "Print version".into()));
 		}
 		rows
+	}
+
+	fn values_for(&self, slot: &Slot) -> &[&'static str] {
+		let Slot::Named(name) = slot else { return &[] };
+		self.defs
+			.iter()
+			.find(|d| d.name == *name)
+			.map(|d| d.values.as_slice())
+			.unwrap_or(&[])
 	}
 }
 
@@ -954,10 +1040,18 @@ fn parse_or_exit<T: ParseArg>(
 	match T::parse_arg(raw) {
 		Ok(v) => v,
 		Err(e) => {
-			// Label is computed only on the error path.
 			let label = slot.label();
-			let hint = type_name.map(|t| format!(" (expected {t})")).unwrap_or_default();
-			parser.die(format!("invalid value '{}' for {label}{hint}: {e}", raw.to_string_lossy()));
+			let values = parser.values_for(slot);
+			let (hint, detail) = if values.is_empty() {
+				let hint = type_name.map(|t| format!(" (expected {t})")).unwrap_or_default();
+				(hint, format!(": {e}"))
+			} else {
+				(format!(" (one of: {})", values.join(", ")), String::new())
+			};
+			parser.die(format!(
+				"invalid value '{}' for {label}{hint}{detail}",
+				raw.to_string_lossy()
+			));
 		}
 	}
 }
@@ -1027,8 +1121,9 @@ impl FlagKey {
 /// ```
 ///
 /// The struct field name becomes the CLI argument name, converted to
-/// kebab-case: `file_name` becomes `--file-name`. The struct field type fixes
-/// the parser's type parameter, so no turbofish is needed. Each argument is
+/// kebab-case: `file_name` becomes `--file-name`. Raw identifiers lose the
+/// `r#` prefix: `r#move` becomes `--move`. The struct field type fixes the
+/// parser's type parameter, so no turbofish is needed. Each argument is
 /// declared once.
 ///
 /// For tests, use the explicit-argv form:

@@ -1,4 +1,9 @@
-use std::{borrow::Cow, ffi::OsString, path::PathBuf};
+use std::{
+	borrow::Cow,
+	ffi::OsString,
+	fmt::{self, Display},
+	path::PathBuf,
+};
 
 use miniargs::*;
 
@@ -240,6 +245,73 @@ fn duplicate_single_value_errors() {
 	let f = fixture();
 	let e = parse_err(&f, &["--host=a", "--host=b"]);
 	assert!(e.contains("more than once"), "{e}");
+}
+
+// ---------------------------------------------------------------------------
+// Choice / enumerated values
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Color {
+	Auto,
+	Always,
+	Never,
+}
+
+impl Choice for Color {
+	const ALL: &'static [Color] = &[Color::Auto, Color::Always, Color::Never];
+
+	fn name(&self) -> &'static str {
+		match self {
+			Color::Auto => "auto",
+			Color::Always => "always",
+			Color::Never => "never",
+		}
+	}
+}
+
+impl Display for Color {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.write_str(self.name())
+	}
+}
+
+#[test]
+fn choice_values_lists_all() {
+	assert_eq!(Color::values(), vec!["auto", "always", "never"]);
+}
+
+#[test]
+fn choice_parses_valid_value() {
+	let mut p = ArgParser::new("test");
+	let color = p.default("color", Color::Auto, Arg::new());
+	let a = p.try_parse(argv(&["--color", "always"])).unwrap();
+	assert_eq!(color.get(&a), Color::Always);
+}
+
+#[test]
+fn choice_default_when_absent() {
+	let mut p = ArgParser::new("test");
+	let color = p.default("color", Color::Auto, Arg::new());
+	let a = p.try_parse(argv(&[])).unwrap();
+	assert_eq!(color.get(&a), Color::Auto);
+}
+
+#[test]
+fn choice_requires_value_lists_options() {
+	let mut p = ArgParser::new("test");
+	let _color = p.default("color", Color::Auto, Arg::new());
+	let e = parse_err_of(&p, &["--color"]);
+	assert!(e.contains("one of: auto, always, never"), "{e}");
+}
+
+#[test]
+fn non_choice_requires_value_has_no_list() {
+	let mut p = ArgParser::new("test");
+	let _jobs = p.default("jobs", 1u32, Arg::new());
+	let e = parse_err_of(&p, &["--jobs"]);
+	assert!(e.contains("--jobs requires a value"), "{e}");
+	assert!(!e.contains("one of"), "{e}");
 }
 
 // ---------------------------------------------------------------------------
@@ -582,6 +654,15 @@ fn help_has_arguments_section() {
 	assert!(h.contains("<rest>..."), "{h}");
 }
 
+#[test]
+fn help_shows_choice_values() {
+	let mut p = ArgParser::new("test");
+	let _color = p.default("color", Color::Auto, Arg::new().desc("Color mode"));
+	let h = p.help();
+	assert!(h.contains("[auto|always|never]"), "{h}");
+	assert!(h.contains("[default: auto]"), "{h}");
+}
+
 // ---------------------------------------------------------------------------
 // kebab
 // ---------------------------------------------------------------------------
@@ -627,7 +708,7 @@ fn kebab_leaves_non_ascii_alone() {
 }
 
 #[test]
-fn raw_identifier_becomes_plain_name() {
+fn kebab_strips_raw_identifier_prefix() {
 	assert_eq!(kebab("r#move"), "move");
 	assert_eq!(kebab("r#type"), "type");
 	assert_eq!(kebab("r#dry_run"), "dry-run");
