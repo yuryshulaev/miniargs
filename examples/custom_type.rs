@@ -1,6 +1,6 @@
 use std::{ffi::OsStr, fmt};
 
-use miniargs::{Arg, ArgParser, ParseArg};
+use miniargs::{arg, ArgParser, ParseArg};
 
 /// A validated port number. Wraps `u16` so the only way to construct one is
 /// through `ParseArg`, which rejects zero.
@@ -29,7 +29,7 @@ fn main() {
 	let port = parser.default(
 		"port",
 		Port(8080),
-		Arg::new().short('p').desc("Port to listen on").type_name("port"),
+		arg().short('p').desc("Port to listen on").type_name("port"),
 	);
 	let args = parser.parse(std::env::args_os());
 	let port: Port = port.get(&args);

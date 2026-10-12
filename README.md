@@ -24,7 +24,7 @@ cargo add miniargs
 ```rust
 use std::path::PathBuf;
 
-use miniargs::{parse_args, Arg, ArgParser};
+use miniargs::{arg, parse_args, ArgParser};
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -44,15 +44,15 @@ fn main() {
     parser.set_version(env!("CARGO_PKG_VERSION"));
 
     let args = parse_args!(parser; Args {
-        target: required(Arg::new().short('t').desc("Build target")),
-        jobs: default(1, Arg::new().short('j').desc("Parallel jobs").type_name("count")),
+        target: required(arg().short('t').desc("Build target")),
+        jobs: default(1, arg().short('j').desc("Parallel jobs").type_name("count")),
         // `project_name` becomes `--project-name` on the command line (all '_' become '-').
-        project_name: optional(Arg::new().desc("Project name (defaults to directory name)")),
-        log: optional(Arg::new().desc("Log file path")),
-        verbose: flag(Arg::new().short('v').desc("Verbose output")),
-        include: repeated(Arg::new().short('I').desc("Add include directory")),
-        output: positional(Arg::new().desc("Output file")),
-        inputs: positional_variadic(Arg::new().desc("Input files")),
+        project_name: optional(arg().desc("Project name (defaults to directory name)")),
+        log: optional(arg().desc("Log file path")),
+        verbose: flag(arg().short('v').desc("Verbose output")),
+        include: repeated(arg().short('I').desc("Add include directory")),
+        output: positional(arg().desc("Output file")),
+        inputs: positional_variadic(arg().desc("Input files")),
     });
 
     if args.inputs.is_empty() {
@@ -68,11 +68,150 @@ fn main() {
 
 Run with `--help` to see the generated usage text.
 
+## Argument shapes, by example
+
+**Required named option.** Missing it is an error.
+
+```rust
+target: required(arg().short('t'))
+// --target x
+// -t x
+```
+
+**Defaulted named option.** Absent means the default.
+
+```rust
+jobs: default(1u32, arg().short('j'))
+// omitted      → 1
+// --jobs 8     → 8
+```
+
+**Optional named option.** Absent means `None`.
+
+```rust
+log: optional(arg().short('l'))
+// omitted   → None
+// --log x   → Some(PathBuf::from("x"))
+```
+
+**Boolean flag.** Present means `true`.
+
+```rust
+verbose: flag(arg().short('v'))
+// omitted    → false
+// -v         → true
+// --verbose  → true
+```
+
+**Repeated option.** Every occurrence accumulates.
+
+```rust
+include: repeated(arg().short('I'))
+// -Ia -I b --include=c → [a, b, c]
+// omitted              → []
+```
+
+**Aliases.** Alternate long names, accepted on the command line and listed in help. They don't get their own short form; the metavar still comes from the primary name.
+
+```rust
+start_file: required(arg().short('s').aliases(&["sf"]).desc("Start file"))
+// -s x | --start-file x | --sf x
+// help: -s, --start-file, --sf <START-FILE>  Start file
+```
+
+An alias that collides with another argument's name or alias is a registration panic.
+
+**Required positional.** One slot, must be present.
+
+```rust
+output: positional(arg())
+// pack out.bin → out.bin
+// pack         → error: missing required positional argument: output
+```
+
+**Optional positional.** One slot, may be absent.
+
+```rust
+name: positional_optional(arg())
+// pack out.bin myproj → Some("myproj")
+// pack out.bin        → None
+```
+
+**Variadic positional.** Zero or more slots, must be declared last. Use a check after parsing to require at least one.
+
+```rust
+inputs: positional_variadic(arg())
+// pack out.bin a b c → [a, b, c]
+// pack out.bin       → []
+```
+
+**`--` separator.** Everything after it is treated as a positional, so hyphen-prefixed tokens survive.
+
+```rust
+rest: positional_variadic(arg())
+// prog -- -x -y → ["-x", "-y"]
+```
+
+**Negative numbers.** Values that parse as `i64` or `f64` are accepted even though they start with `-`, no configuration needed.
+
+```rust
+offset: default(0i32, arg().short('o'))
+// --offset -5 → -5
+```
+
+**Other hyphen-prefixed values.** Off by default; enable per-argument.
+
+```rust
+pattern: optional(arg().short('p').allow_hyphen_values())
+// --pattern -file → "-file"
+// without allow_hyphen_values this errors, with a hint to use --pattern=-file
+```
+
+**Type names in error messages.** By default the Rust type is used; `.type_name("x")` replaces it; `.type_name_hidden()` omits it. The effects are visible only on parse failures, so they matter for `u32` and friends, not for `String` or `PathBuf` which accept anything.
+
+```rust
+jobs: default(1u32, arg().short('j').type_name("count"))
+// --jobs abc
+// error: invalid value 'abc' for --jobs (expected count): invalid digit found in string
+```
+
+**Validation.** Runs on the constructed struct, after parsing, in plain Rust.
+
+```rust
+if args.inputs.is_empty() {
+    parser.die("at least one input file is required");
+}
+```
+
+`parser.die(msg)` prints `error: {msg}` followed by a `--help` hint and exits with code 2.
+
+## Without the macro
+
+`parse_args!` is the recommended path, but everything works without it. Call the same methods directly, then read each key:
+
+```rust
+let mut parser = ArgParser::new("pack");
+
+let host = parser.required("host", arg().short('H').desc("Host to bind"));
+let verbose = parser.flag("verbose", arg().short('v').desc("Verbose output"));
+let output = parser.positional("output", arg().desc("Output file"));
+
+let args = parser.parse(std::env::args_os());
+
+let host: String = host.get(&args);
+let verbose: bool = verbose.get(&args);
+let output: PathBuf = output.get(&args);
+```
+
+When you don't use the macro, the name is the first argument to each method, and the type comes from the `let` annotation at the read site: `let host: String = host.get(&args);`. Call `miniargs::kebab("file_name")` if you want the same `_` to `-` conversion the macro applies.
+
+See `examples/manual.rs`.
+
 ## How `parse_args!` works
 
 ```rust
 let args = parse_args!(parser; Args {
-    file_name: required(Arg::new().short('f').desc("File to process")),
+    file_name: required(arg().short('f').desc("File to process")),
 });
 ```
 
@@ -82,7 +221,7 @@ expands to:
 let args = {
     let file_name = parser.required(
         kebab("file_name"),
-        Arg::new().short('f').desc("File to process"),
+        arg().short('f').desc("File to process"),
     );
     let args = parser.parse(std::env::args_os());
     Args { file_name: file_name.get(&args) }
@@ -100,129 +239,12 @@ For tests, use the two-argument form with an explicit argv:
 ```rust
 let argv = vec![OsString::from("pack"), OsString::from("-v"), OsString::from("out.bin")];
 let args = parse_args!(parser, argv; Args {
-    verbose: flag(Arg::new().short('v')),
-    output: positional(Arg::new()),
+    verbose: flag(arg().short('v')),
+    output: positional(arg()),
 });
 ```
 
 `std::env::args_os()` is process-global and unsafe to mutate in parallel tests, so the explicit-argv form is the one you want in `#[test]` functions.
-
-## Argument shapes, by example
-
-**Required named option.** Missing it is an error.
-
-```rust
-target: required(Arg::new().short('t'))
-// --target x
-// -t x
-```
-
-**Defaulted named option.** Absent means the default.
-
-```rust
-jobs: default(1u32, Arg::new().short('j'))
-// omitted      → 1
-// --jobs 8     → 8
-```
-
-**Optional named option.** Absent means `None`.
-
-```rust
-log: optional(Arg::new().short('l'))
-// omitted   → None
-// --log x   → Some(PathBuf::from("x"))
-```
-
-**Boolean flag.** Present means `true`.
-
-```rust
-verbose: flag(Arg::new().short('v'))
-// omitted    → false
-// -v         → true
-// --verbose  → true
-```
-
-**Repeated option.** Every occurrence accumulates.
-
-```rust
-include: repeated(Arg::new().short('I'))
-// -Ia -I b --include=c → [a, b, c]
-// omitted              → []
-```
-
-**Aliases.** Alternate long names, accepted on the command line and listed in help. They don't get their own short form; the metavar still comes from the primary name.
-
-```rust
-start_file: required(Arg::new().short('s').aliases(&["sf"]).desc("Start file"))
-// -s x | --start-file x | --sf x
-// help: -s, --start-file, --sf <START-FILE>  Start file
-```
-
-An alias that collides with another argument's name or alias is a registration panic.
-
-**Required positional.** One slot, must be present.
-
-```rust
-output: positional(Arg::new())
-// pack out.bin → out.bin
-// pack         → error: missing required positional argument: output
-```
-
-**Optional positional.** One slot, may be absent.
-
-```rust
-name: positional_optional(Arg::new())
-// pack out.bin myproj → Some("myproj")
-// pack out.bin        → None
-```
-
-**Variadic positional.** Zero or more slots, must be declared last. Use a check after parsing to require at least one.
-
-```rust
-inputs: positional_variadic(Arg::new())
-// pack out.bin a b c → [a, b, c]
-// pack out.bin       → []
-```
-
-**`--` separator.** Everything after it is treated as a positional, so hyphen-prefixed tokens survive.
-
-```rust
-rest: positional_variadic(Arg::new())
-// prog -- -x -y → ["-x", "-y"]
-```
-
-**Negative numbers.** Values that parse as `i64` or `f64` are accepted even though they start with `-`, no configuration needed.
-
-```rust
-offset: default(0i32, Arg::new().short('o'))
-// --offset -5 → -5
-```
-
-**Other hyphen-prefixed values.** Off by default; enable per-argument.
-
-```rust
-pattern: optional(Arg::new().short('p').allow_hyphen_values())
-// --pattern -file → "-file"
-// without allow_hyphen_values this errors, with a hint to use --pattern=-file
-```
-
-**Type names in error messages.** By default the Rust type is used; `.type_name("x")` replaces it; `.type_name_hidden()` omits it. The effects are visible only on parse failures, so they matter for `u32` and friends, not for `String` or `PathBuf` which accept anything.
-
-```rust
-jobs: default(1u32, Arg::new().short('j').type_name("count"))
-// --jobs abc
-// error: invalid value 'abc' for --jobs (expected count): invalid digit found in string
-```
-
-**Validation.** Runs on the constructed struct, after parsing, in plain Rust.
-
-```rust
-if args.inputs.is_empty() {
-    parser.die("at least one input file is required");
-}
-```
-
-`parser.die(msg)` prints `error: {msg}` followed by a `--help` hint and exits with code 2.
 
 ## Customizing help
 
@@ -274,7 +296,7 @@ enum_choice! {
 Use it like any other type:
 
 ```rust
-let color = parser.default("color", Color::Auto, Arg::new().desc("Color mode"));
+let color = parser.default("color", Color::Auto, arg().desc("Color mode"));
 ```
 
 The value strings appear once, in the macro call. Everything else — the enum, `Choice`, `Display`, the help hint, the "requires a value" error — derives from that one list.
@@ -309,7 +331,7 @@ impl std::fmt::Display for Color {
 }
 ```
 
-Here the variants are listed twice — once in the enum, once in the macro — so a variant added to the enum but not the macro is a compile error:
+Here the variants are listed twice — once in the enum, once in the macro — so a variant added to the enum but not the macro is a compile error:
 
 ```
 error[E0004]: non-exhaustive patterns: `Color::New` not covered
@@ -330,7 +352,7 @@ For types without a fixed value set, implement `ParseArg` directly. A newtype wi
 ```rust
 use std::{ffi::OsStr, fmt};
 
-use miniargs::{Arg, ArgParser, ParseArg};
+use miniargs::{arg, ArgParser, ParseArg};
 
 /// A port number. `ParseArg` rejects zero, so values that come from the
 /// command line are always valid.
@@ -361,7 +383,7 @@ Use it like any other type:
 let port = parser.default(
     "port",
     Port(8080),
-    Arg::new().short('p').desc("Port to listen on").type_name("port"),
+    arg().short('p').desc("Port to listen on").type_name("port"),
 );
 // ...
 let port: Port = port.get(&args);
@@ -382,7 +404,7 @@ Two requirements, both only for `default`:
 `required` and `optional` need neither. If you'd rather not add them, use `optional` and unwrap at the read site:
 
 ```rust
-let port = parser.optional("port", Arg::new().short('p').desc("Port to listen on"));
+let port = parser.optional("port", arg().short('p').desc("Port to listen on"));
 let port: Port = port.get(&args).unwrap_or(Port(8080));
 ```
 
@@ -441,7 +463,7 @@ Dispatch on `argv[1]` with `Dispatcher`. Each command gets its own `ArgParser` a
 ```rust
 use std::ffi::OsString;
 
-use miniargs::{parse_args, Arg, ArgParser, Dispatcher};
+use miniargs::{arg, parse_args, ArgParser, Dispatcher};
 
 fn main() {
     let mut dispatcher = Dispatcher::new("myprog");
@@ -470,40 +492,18 @@ fn cmd_add(prog: &str, argv: &[OsString]) {
 
 See `examples/subcommands.rs`.
 
-## Without the macro
-
-`parse_args!` is the recommended path, but everything works without it. Call the same methods directly, then read each key:
-
-```rust
-let mut parser = ArgParser::new("pack");
-
-let host = parser.required("host", Arg::new().short('H').desc("Host to bind"));
-let verbose = parser.flag("verbose", Arg::new().short('v').desc("Verbose output"));
-let output = parser.positional("output", Arg::new().desc("Output file"));
-
-let args = parser.parse(std::env::args_os());
-
-let host: String = host.get(&args);
-let verbose: bool = verbose.get(&args);
-let output: PathBuf = output.get(&args);
-```
-
-When you don't use the macro, the name is the first argument to each method, and the type comes from the `let` annotation at the read site: `let host: String = host.get(&args);`. Call `miniargs::kebab("file_name")` if you want the same `_` to `-` conversion the macro applies.
-
-See `examples/manual.rs`.
-
 ## Typed keys
 
 Each registration method returns a key whose type parameter records the value type:
 
 ```rust
-let jobs = parser.default("jobs", 1u32, Arg::new());
+let jobs = parser.default("jobs", 1u32, arg());
 // jobs: DefaultKey<u32>
 
-let host = parser.required::<String>("host", Arg::new());
+let host = parser.required::<String>("host", arg());
 // host: RequiredKey<String>
 
-let verbose = parser.flag("verbose", Arg::new());
+let verbose = parser.flag("verbose", arg());
 // verbose: FlagKey
 ```
 

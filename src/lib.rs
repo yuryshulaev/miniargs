@@ -278,7 +278,7 @@ impl Arg {
 	}
 
 	/// Override the type name shown in error messages:
-	/// `Arg::new().type_name("count")` prints `(expected count)` instead of
+	/// `arg().type_name("count")` prints `(expected count)` instead of
 	/// `(expected u32)`.
 	pub fn type_name(mut self, name: &'static str) -> Self {
 		self.type_name = TypeName::Manual(name);
@@ -290,6 +290,12 @@ impl Arg {
 		self.type_name = TypeName::Hidden;
 		self
 	}
+}
+
+/// Shorthand for [`Arg::new`]. Use it at registration call sites:
+/// `required(arg().short('t').desc("Build target"))`.
+pub fn arg() -> Arg {
+	Arg::new()
 }
 
 // ============================================================================
@@ -561,6 +567,7 @@ impl ArgParser {
 
 	// --- registration --------------------------------------------------
 
+	/// A required value argument. Missing it is an error.
 	pub fn required<T: ParseArg>(
 		&mut self,
 		name: impl Into<Cow<'static, str>>,
@@ -572,6 +579,7 @@ impl ArgParser {
 		RequiredKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
 	}
 
+	/// A value argument with a default. Absent means the default.
 	pub fn default<T: ParseArg + Display>(
 		&mut self,
 		name: impl Into<Cow<'static, str>>,
@@ -593,6 +601,7 @@ impl ArgParser {
 		DefaultKey { slot: Slot::Named(name), default, type_name: tn }
 	}
 
+	/// An optional value argument. Absent means `None`.
 	pub fn optional<T: ParseArg>(
 		&mut self,
 		name: impl Into<Cow<'static, str>>,
@@ -604,6 +613,7 @@ impl ArgParser {
 		OptionalKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
 	}
 
+	/// A repeated value argument. Every occurrence accumulates.
 	pub fn repeated<T: ParseArg>(
 		&mut self,
 		name: impl Into<Cow<'static, str>>,
@@ -615,12 +625,33 @@ impl ArgParser {
 		RepeatedKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
 	}
 
+	/// A boolean flag. Present means `true`.
 	pub fn flag(&mut self, name: impl Into<Cow<'static, str>>, arg: Arg) -> FlagKey {
 		let name = name.into();
 		self.push_named(name.clone(), arg, false, false, false, Vec::new(), None, false);
 		FlagKey { name }
 	}
 
+	/// A hidden optional value argument. Accepted but not listed in help.
+	pub fn hidden<T: ParseArg>(
+		&mut self,
+		name: impl Into<Cow<'static, str>>,
+		arg: Arg,
+	) -> OptionalKey<T> {
+		let name = name.into();
+		let tn = resolve_type_name::<T>(arg.type_name);
+		self.push_named(name.clone(), arg, true, false, false, T::values(), None, true);
+		OptionalKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
+	}
+
+	/// A hidden flag. Accepted but not listed in help.
+	pub fn hidden_flag(&mut self, name: impl Into<Cow<'static, str>>, arg: Arg) -> FlagKey {
+		let name = name.into();
+		self.push_named(name.clone(), arg, false, false, false, Vec::new(), None, true);
+		FlagKey { name }
+	}
+
+	/// A required positional argument.
 	pub fn positional<T: ParseArg>(
 		&mut self,
 		name: impl Into<Cow<'static, str>>,
@@ -635,6 +666,7 @@ impl ArgParser {
 		}
 	}
 
+	/// An optional positional argument.
 	pub fn positional_optional<T: ParseArg>(
 		&mut self,
 		name: impl Into<Cow<'static, str>>,
@@ -649,6 +681,7 @@ impl ArgParser {
 		}
 	}
 
+	/// A variadic positional argument. Zero or more slots; must be last.
 	pub fn positional_variadic<T: ParseArg>(
 		&mut self,
 		name: impl Into<Cow<'static, str>>,
@@ -665,24 +698,6 @@ impl ArgParser {
 			type_name: resolve_type_name::<T>(arg.type_name),
 			_t: PhantomData,
 		}
-	}
-
-	/// A hidden optional value argument. Accepted on the command line but not listed in `--help`.
-	pub fn hidden<T: ParseArg>(
-		&mut self,
-		name: impl Into<Cow<'static, str>>,
-		arg: Arg,
-	) -> OptionalKey<T> {
-		let name = name.into();
-		let tn = resolve_type_name::<T>(arg.type_name);
-		self.push_named(name.clone(), arg, true, false, false, T::values(), None, true);
-		OptionalKey { slot: Slot::Named(name), type_name: tn, _t: PhantomData }
-	}
-
-	pub fn hidden_flag(&mut self, name: impl Into<Cow<'static, str>>, arg: Arg) -> FlagKey {
-		let name = name.into();
-		self.push_named(name.clone(), arg, false, false, false, Vec::new(), None, true);
-		FlagKey { name }
 	}
 
 	fn push_positional(
@@ -1019,6 +1034,7 @@ impl ArgParser {
 
 	pub fn help(&self) -> String {
 		let mut out = String::new();
+
 		if let Some(about) = &self.about {
 			out.push_str(about);
 			out.push_str("\n\n");
@@ -1114,7 +1130,9 @@ impl ArgParser {
 	}
 
 	fn values_for(&self, slot: &Slot) -> &[&'static str] {
-		let Slot::Named(name) = slot else { return &[] };
+		let Slot::Named(name) = slot else {
+			return &[];
+		};
 		self.defs
 			.iter()
 			.find(|d| d.name == *name)
@@ -1149,6 +1167,7 @@ fn parse_or_exit<T: ParseArg>(
 	match T::parse_arg(raw) {
 		Ok(v) => v,
 		Err(e) => {
+			// Label is computed only on the error path.
 			let label = slot.label();
 			let values = parser.values_for(slot);
 			let (hint, detail) = if values.is_empty() {
@@ -1224,8 +1243,8 @@ impl FlagKey {
 ///
 /// ```ignore
 /// let args = parse_args!(parser; Args {
-///     host: required(Arg::new().short('H').desc("Host")),
-///     verbose: flag(Arg::new().short('v')),
+///     host: required(arg().short('H').desc("Host")),
+///     verbose: flag(arg().short('v')),
 /// });
 /// ```
 ///

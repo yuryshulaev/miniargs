@@ -1,41 +1,41 @@
 use std::path::PathBuf;
 
-use miniargs::{Arg, ArgParser};
+use miniargs::{arg, ArgParser};
 
 fn main() {
 	let mut parser = ArgParser::new("pack");
 	parser.set_version(env!("CARGO_PKG_VERSION"));
 
 	// Required named option.
-	let target = parser.required("target", Arg::new().short('t').desc("Build target"));
+	let target = parser.required("target", arg().short('t').desc("Build target"));
 
 	// Defaulted named option.
 	let jobs = parser.default(
-		"jobs",
+		"jobs", //
 		1u32,
-		Arg::new().short('j').desc("Parallel jobs").type_name("count"),
+		arg().short('j').desc("Parallel jobs").type_name("count"),
 	);
 
 	// Optional named option.
 	let project_name = parser.optional(
 		"project-name", //
-		Arg::new().desc("Project name (defaults to directory name)"),
+		arg().desc("Project name (defaults to directory name)"),
 	);
 
 	// Optional named option with a hidden type name.
-	let log = parser.optional("log", Arg::new().desc("Log file path").type_name_hidden());
+	let log = parser.optional("log", arg().desc("Log file path").type_name_hidden());
 
 	// Flag.
-	let verbose = parser.flag("verbose", Arg::new().short('v').desc("Verbose output"));
+	let verbose = parser.flag("verbose", arg().short('v').desc("Verbose output"));
 
 	// Repeated named option.
-	let include = parser.repeated("include", Arg::new().short('I').desc("Add include directory"));
+	let include = parser.repeated("include", arg().short('I').desc("Add include directory"));
 
 	// Positional (required).
-	let output = parser.positional("output", Arg::new().desc("Output file"));
+	let output = parser.positional("output", arg().desc("Output file"));
 
 	// Positional (variadic): zero or more, must be last.
-	let inputs = parser.positional_variadic("inputs", Arg::new().desc("Input files"));
+	let inputs = parser.positional_variadic("inputs", arg().desc("Input files"));
 
 	let args = parser.parse(std::env::args_os());
 

@@ -1,6 +1,6 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use miniargs::{parse_args, Arg, ArgParser, Dispatcher};
+use miniargs::{arg, parse_args, ArgParser, Dispatcher};
 
 #[derive(Debug)]
 struct AddArgs {
@@ -26,9 +26,9 @@ fn main() {
 fn cmd_add(prog: &str, argv: &[OsString]) {
 	let mut parser = ArgParser::new(format!("{prog} add"));
 	let args = parse_args!(parser, argv; AddArgs {
-		collection_name: required(Arg::new().short('n').desc("Collection to add to")),
-		force: flag(Arg::new().short('f').desc("Overwrite existing entries")),
-		files: positional_variadic(Arg::new().desc("Files to add")),
+		collection_name: required(arg().short('n').desc("Collection to add to")),
+		force: flag(arg().short('f').desc("Overwrite existing entries")),
+		files: positional_variadic(arg().desc("Files to add")),
 	});
 
 	if args.files.is_empty() {
@@ -43,8 +43,8 @@ fn cmd_add(prog: &str, argv: &[OsString]) {
 fn cmd_remove(prog: &str, argv: &[OsString]) {
 	let mut parser = ArgParser::new(format!("{prog} remove"));
 	let args = parse_args!(parser, argv; RemoveArgs {
-		collection_name: required(Arg::new().short('n').desc("Collection to remove")),
-		force: flag(Arg::new().short('f').desc("Remove without confirmation")),
+		collection_name: required(arg().short('n').desc("Collection to remove")),
+		force: flag(arg().short('f').desc("Remove without confirmation")),
 	});
 
 	if !args.force {

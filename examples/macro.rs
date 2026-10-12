@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use miniargs::{parse_args, Arg, ArgParser};
+use miniargs::{arg, parse_args, ArgParser};
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -20,15 +20,15 @@ fn main() {
 	parser.set_version(env!("CARGO_PKG_VERSION"));
 
 	let args = parse_args!(parser; Args {
-		target: required(Arg::new().short('t').desc("Build target")),
-		jobs: default(1, Arg::new().short('j').desc("Parallel jobs").type_name("count")),
+		target: required(arg().short('t').desc("Build target")),
+		jobs: default(1, arg().short('j').desc("Parallel jobs").type_name("count")),
 		// `project_name` becomes `--project-name` on the command line (all '_' become '-').
-		project_name: optional(Arg::new().desc("Project name (defaults to directory name)")),
-		log: optional(Arg::new().desc("Log file path")),
-		verbose: flag(Arg::new().short('v').desc("Verbose output")),
-		include: repeated(Arg::new().short('I').desc("Add include directory")),
-		output: positional(Arg::new().desc("Output file")),
-		inputs: positional_variadic(Arg::new().desc("Input files")),
+		project_name: optional(arg().desc("Project name (defaults to directory name)")),
+		log: optional(arg().desc("Log file path")),
+		verbose: flag(arg().short('v').desc("Verbose output")),
+		include: repeated(arg().short('I').desc("Add include directory")),
+		output: positional(arg().desc("Output file")),
+		inputs: positional_variadic(arg().desc("Input files")),
 	});
 
 	if args.inputs.is_empty() {
