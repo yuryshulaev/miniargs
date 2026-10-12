@@ -102,19 +102,79 @@ impl<T: Choice> ParseArg for T {
 	}
 }
 
+/// Define an enum and implement [`Choice`] for it.
+///
+/// Each variant is listed once with its CLI spelling. Generates the enum, a
+/// [`Choice`] impl, and a [`Display`] impl that delegates to `name`.
+///
+/// ```ignore
+/// enum_choice! {
+///     #[derive(Debug, Clone, Copy)]
+///     pub enum Color {
+///         Auto => "auto",
+///         Always => "always",
+///         Never => "never",
+///     }
+/// }
+/// ```
+///
+/// The `match` in `name` is exhaustive, so a variant missing from the list
+/// is a compile error. Unit variants only.
 #[macro_export]
-macro_rules! all_variants {
-	($t:ident; $($v:ident),+ $(,)?) => {{
-		// Exhaustive match: adding a variant to `$t` breaks compilation
-		// here, forcing you to update `ALL`.
-		#[allow(dead_code, clippy::match_single_binding)]
-		const fn _exhaustive(c: $t) {
-			match c {
-				$($t::$v => {})+
+macro_rules! enum_choice {
+	(
+		$(#[$meta:meta])*
+		$vis:vis enum $name:ident {
+			$($variant:ident => $str:literal),+ $(,)?
+		}
+	) => {
+		$(#[$meta])*
+		$vis enum $name {
+			$($variant),+
+		}
+
+		$crate::impl_choice!($name;
+			$($variant => $str),+
+		);
+
+		impl ::std::fmt::Display for $name {
+			fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+				f.write_str($crate::Choice::name(self))
 			}
 		}
-		&[$($t::$v),+]
-	}};
+	};
+}
+
+/// Implement [`Choice`] for an existing enum.
+///
+/// Each variant is listed once with its CLI spelling. Does not define the
+/// enum and does not generate a [`Display`] impl — provide those yourself.
+///
+/// ```ignore
+/// impl_choice!(Color;
+///     Auto => "auto",
+///     Always => "always",
+///     Never => "never",
+/// );
+/// ```
+///
+/// Use this for enums from another crate or with attributes
+/// [`enum_choice!`](crate::enum_choice) would drop. The `match` in `name` is
+/// exhaustive, so a variant missing from the list is a compile error. Unit
+/// variants only.
+#[macro_export]
+macro_rules! impl_choice {
+	($t:ident; $($variant:ident => $name:literal),+ $(,)?) => {
+		impl $crate::Choice for $t {
+			const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+			fn name(&self) -> &'static str {
+				match self {
+					$(Self::$variant => $name),+
+				}
+			}
+		}
+	};
 }
 
 // ============================================================================

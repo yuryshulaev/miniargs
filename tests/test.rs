@@ -314,6 +314,21 @@ fn non_choice_requires_value_has_no_list() {
 	assert!(!e.contains("one of"), "{e}");
 }
 
+#[test]
+fn enum_choice_macro_produces_working_choice() {
+	miniargs::enum_choice! {
+		#[derive(Debug, Clone, Copy, PartialEq)]
+		enum Size { Small => "small", Large => "large" }
+	}
+	assert_eq!(Size::values(), vec!["small", "large"]);
+	assert_eq!(Size::Small.to_string(), "small");
+
+	let mut p = ArgParser::new("test");
+	let s = p.default("size", Size::Small, Arg::new());
+	let a = p.try_parse(argv(&["--size", "large"])).unwrap();
+	assert_eq!(s.get(&a), Size::Large);
+}
+
 // ---------------------------------------------------------------------------
 // Help and version
 // ---------------------------------------------------------------------------
@@ -677,6 +692,13 @@ fn help_prints_footer_after_options() {
 	p.set_footer("See the docs.");
 	let h = p.help();
 	assert!(h.trim_end().ends_with("See the docs."), "{h}");
+}
+
+#[test]
+fn set_about_accepts_string() {
+	let mut p = ArgParser::new("test");
+	p.set_about(format!("Version {}", 1));
+	assert!(p.help().starts_with("Version 1"));
 }
 
 // ---------------------------------------------------------------------------

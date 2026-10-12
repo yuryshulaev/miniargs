@@ -1,27 +1,11 @@
-use miniargs::{all_variants, Arg, ArgParser, Choice};
+use miniargs::{enum_choice, Arg, ArgParser};
 
-#[derive(Debug, Clone, Copy)]
-enum Color {
-	Auto,
-	Always,
-	Never,
-}
-
-impl Choice for Color {
-	const ALL: &'static [Color] = all_variants!(Color; Auto, Always, Never);
-
-	fn name(&self) -> &'static str {
-		match self {
-			Color::Auto => "auto",
-			Color::Always => "always",
-			Color::Never => "never",
-		}
-	}
-}
-
-impl std::fmt::Display for Color {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.write_str(self.name())
+enum_choice! {
+	#[derive(Debug, Clone, Copy)]
+	pub enum Color {
+		Auto => "auto",
+		Always => "always",
+		Never => "never",
 	}
 }
 

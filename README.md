@@ -254,31 +254,19 @@ Options:
 Report bugs at https://github.com/you/pack/issues
 ```
 
-All three accept `impl Into<Cow<'static, str>>`, so `&'static str` literals and `format!(...)` both work. Multi-line text works with `\n`, and nothing is reflowed — what you write is what appears.
+All three accept `impl Into<Cow<'static, str>>`, so `&'static str` literals and `format!(...)` both work. Multi-line text works with `\n`, and nothing is reflowed — what you write is what appears.
 
 ## Enumerated values
 
-Implement `Choice` for a closed set of values. The parser learns the accepted names, uses them for error messages, and lists them in `--help`:
+`enum_choice!` defines an enum and implements `Choice` for it. The parser learns the accepted names, uses them for error messages, and lists them in `--help`:
 
 ```rust
-#[derive(Debug, Clone, Copy)]
-enum Color { Auto, Always, Never }
-
-impl Choice for Color {
-    const ALL: &'static [Color] = all_variants!(Color; Auto, Always, Never);
-
-    fn name(&self) -> &'static str {
-        match self {
-            Color::Auto => "auto",
-            Color::Always => "always",
-            Color::Never => "never",
-        }
-    }
-}
-
-impl std::fmt::Display for Color {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.name())
+enum_choice! {
+    #[derive(Debug, Clone, Copy)]
+    enum Color {
+        Auto => "auto",
+        Always => "always",
+        Never => "never",
     }
 }
 ```
@@ -289,7 +277,7 @@ Use it like any other type:
 let color = parser.default("color", Color::Auto, Arg::new().desc("Color mode"));
 ```
 
-The value strings appear once, in `name()`. Everything else — parsing, the help hint, the "requires a value" error — derives from `ALL` and `name()`.
+The value strings appear once, in the macro call. Everything else — the enum, `Choice`, `Display`, the help hint, the "requires a value" error — derives from that one list.
 
 ```
 $ pack --color wef
@@ -302,17 +290,36 @@ $ pack --help
       --color <COLOR>  Color mode [auto|always|never] [default: auto]
 ```
 
-The variant list is written twice — once in the enum, once in `all_variants!`. The macro expands to an exhaustive `match`, so `ALL` won't build until every variant is listed:
+If the enum already exists, define it yourself and use `impl_choice!`:
+
+```rust
+#[derive(Debug, Clone, Copy)]
+enum Color { Auto, Always, Never }
+
+impl_choice!(Color;
+    Auto => "auto",
+    Always => "always",
+    Never => "never",
+);
+
+impl std::fmt::Display for Color {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+```
+
+Here the variants are listed twice — once in the enum, once in the macro — so a variant added to the enum but not the macro is a compile error:
 
 ```
 error[E0004]: non-exhaustive patterns: `Color::New` not covered
-  --> src/main.rs:13:36
+  --> src/main.rs:5:9
    |
-13 |     const ALL: &'static [Color] = all_variants!(Color; Auto, Always, Never);
-   |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 5 |         Auto => "auto",
+   |         ^^^^ pattern `Color::New` not covered
 ```
 
-The macro works for unit variants only — a variant with a payload doesn't fit the trait's model of a closed set of names.
+Both macros work for unit variants only — a variant with a payload doesn't fit the trait's model of a closed set of names.
 
 `Choice` requires `Copy`, `Display`, and `'static`. Implementing it gives you a `ParseArg` impl for free via a blanket impl. The default `from_name` is a linear scan over `ALL`, comparing `name()`; override it with a `match` for large enums.
 
