@@ -409,17 +409,6 @@ fn version_carries_text() {
 }
 
 // ---------------------------------------------------------------------------
-// ParseError
-// ---------------------------------------------------------------------------
-
-#[test]
-fn exit_terminal_passes_user_through() {
-	let err = ParseError::User("bad value".into());
-	let kept = err.exit_terminal();
-	assert!(matches!(kept, ParseError::User(ref m) if m == "bad value"));
-}
-
-// ---------------------------------------------------------------------------
 // Separator and positionals
 // ---------------------------------------------------------------------------
 

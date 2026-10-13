@@ -1,6 +1,6 @@
-use std::{ffi::OsString, fmt, path::PathBuf};
+use std::{ffi::OsString, path::PathBuf};
 
-use miniargs::{arg, args, ArgParser, Dispatcher, ParseError};
+use miniargs::{arg, args, ArgParser, Dispatcher, FatalError, ParseError};
 
 args! {
 	#[derive(Debug)]
@@ -19,7 +19,6 @@ args! {
 	}
 }
 
-/// What each subcommand produces. This is what tests assert on.
 #[derive(Debug, PartialEq)]
 enum Outcome {
 	Added {
@@ -31,12 +30,9 @@ enum Outcome {
 	},
 }
 
-/// Everything a handler can fail with: argument errors from the parser,
-/// plus whatever the command's own rules reject.
 #[derive(Debug)]
 enum AppError {
 	Parse(ParseError),
-	/// The command's own validation, separate from argument parsing.
 	Domain(String),
 }
 
@@ -46,11 +42,11 @@ impl From<ParseError> for AppError {
 	}
 }
 
-impl fmt::Display for AppError {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl FatalError for AppError {
+	fn exit(self) -> ! {
 		match self {
-			AppError::Parse(e) => write!(f, "{e}"),
-			AppError::Domain(msg) => write!(f, "{msg}"),
+			AppError::Parse(e) => e.exit(),
+			AppError::Domain(msg) => ParseError::User(msg).exit(),
 		}
 	}
 }
@@ -139,11 +135,38 @@ mod tests {
 	#[test]
 	fn parse_errors_are_distinguishable() {
 		let d = app();
-		// Missing required --collection-name reaches AppError::Parse,
-		// because try_parse_from propagates only ParseError::User.
 		assert!(matches!(
 			d.dispatch_with(argv(&["myprog", "add", "a.txt"])),
 			Dispatch::Ran(Err(AppError::Parse(_)))
+		));
+	}
+
+	#[test]
+	fn subcommand_help_is_a_value() {
+		let d = app();
+		// `myprog add --help` propagates `ParseError::Help` through the
+		// handler's `?` and lands in `AppError::Parse`. The dispatcher
+		// would call `AppError::exit`, which delegates to `ParseError::exit`
+		// to print the subcommand's help and exit 0.
+		let out = d.dispatch_with(argv(&["myprog", "add", "--help"]));
+		let Dispatch::Ran(Err(AppError::Parse(ParseError::Help(text)))) = out else {
+			panic!("expected nested Help");
+		};
+		assert!(text.contains("--collection-name"), "{text}");
+	}
+
+	#[test]
+	fn terminal_errors_survive_conversion() {
+		let e = AppError::from(ParseError::Help("help text".into()));
+		assert!(matches!(
+			e,
+			AppError::Parse(ParseError::Help(ref t)) if t == "help text"
+		));
+
+		let e = AppError::from(ParseError::Version("1.0".into()));
+		assert!(matches!(
+			e,
+			AppError::Parse(ParseError::Version(ref v)) if v == "1.0"
 		));
 	}
 }

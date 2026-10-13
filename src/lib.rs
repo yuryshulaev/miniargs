@@ -561,17 +561,6 @@ impl ParseError {
 			}
 		}
 	}
-
-	/// Exit 0 if this is `Help` or `Version` — those are terminal, with no
-	/// value to hand back. Return `User` unchanged. Use this in a value
-	/// command that wants help and version to behave the standard way while
-	/// treating argument errors as values.
-	pub fn exit_terminal(self) -> Self {
-		match self {
-			ParseError::Help(_) | ParseError::Version(_) => self.exit(),
-			ParseError::User(_) => self,
-		}
-	}
 }
 
 impl Display for ParseError {
@@ -585,6 +574,36 @@ impl Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
+
+/// An error type whose `exit` decides how the process ends.
+///
+/// `ParseError` implements this: `Help` and `Version` print their text and
+/// exit 0, `User` prints with a `--help` hint and exits 2. Handler error
+/// types implement it to route their own variants, usually by delegating
+/// to the wrapped `ParseError`:
+///
+/// ```ignore
+/// impl FatalError for AppError {
+///     fn exit(self) -> ! {
+///         match self {
+///             AppError::Parse(e) => e.exit(),
+///             AppError::Domain(m) => {
+///                 eprintln!("error: {m}");
+///                 std::process::exit(2);
+///             }
+///         }
+///     }
+/// }
+/// ```
+pub trait FatalError {
+	fn exit(self) -> !;
+}
+
+impl FatalError for ParseError {
+	fn exit(self) -> ! {
+		ParseError::exit(self)
+	}
+}
 
 pub struct ParsedArgs<'a> {
 	parser: &'a ArgParser,
@@ -1632,28 +1651,19 @@ impl Dispatcher<()> {
 	}
 }
 
-impl<R, E: Display> Dispatcher<Result<R, E>> {
+impl<R, E: FatalError> Dispatcher<Result<R, E>> {
 	/// Dispatch on `std::env::args_os()` and return the handler's outcome.
 	pub fn run(&self) -> R {
 		self.run_with(std::env::args_os())
 	}
 
 	/// Dispatch on an explicit argv and return the handler's outcome on
-	/// success. On a handler error, prints it and exits 2.
-	///
-	/// This is the value-returning entry point: `main` can be a `match` on
-	/// the returned outcome. Handlers are responsible for handling
-	/// `ParseError::Help` and `ParseError::Version` themselves — use
-	/// [`ParseError::exit_terminal`] at the point where a parse error is
-	/// converted into the handler's error type.
+	/// success. On any error — argument, domain, or terminal — the error's
+	/// `exit` decides what to print and what code to exit with.
 	pub fn run_with<I: IntoIterator<Item: Into<OsString>>>(&self, argv: I) -> R {
 		match self.exit_on_non_ran(self.dispatch_with(argv)) {
 			Ok(r) => r,
-			Err(e) => {
-				eprintln!("error: {e}");
-				eprintln!("Run with --help for usage.");
-				std::process::exit(2);
-			}
+			Err(e) => e.exit(),
 		}
 	}
 }

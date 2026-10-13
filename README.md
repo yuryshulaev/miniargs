@@ -327,7 +327,7 @@ Options:
 Report bugs at https://github.com/you/pack/issues
 ```
 
-All three accept `impl Into<Cow<'static, str>>`, so `&'static str` literals and `format!(...)` both work. Multi-line text works with `\n`, and nothing is reflowed — what you write is what appears.
+All three accept `impl Into<Cow<'static, str>>`, so `&'static str` literals and `format!(...)` both work. Multi-line text works with `\n`, and nothing is reflowed — what you write is what appears.
 
 ## Enumerated values
 
@@ -350,7 +350,7 @@ Use it like any other type:
 let color = parser.default("color", Color::Auto, arg().desc("Color mode"));
 ```
 
-The value strings appear once, in the macro call. Everything else — the enum, `Choice`, `Display`, the help hint, the "requires a value" error — derives from that one list.
+The value strings appear once, in the macro call. Everything else — the enum, `Choice`, `Display`, the help hint, the "requires a value" error — derives from that one list.
 
 ```
 $ pack --color wef
@@ -516,7 +516,7 @@ let ParseError::Help(text) = err else { panic!() };
 assert!(text.contains("--help"));
 ```
 
-`ParseError::exit` prints and exits with the usual codes. `parse_from` calls it for you; `try_parse_from` hands the error back. For a handler that wants help and version to exit but argument errors to propagate, call `ParseError::exit_terminal` on the error before converting it to the handler's error type. See `examples/try_parse.rs`.
+`ParseError::exit` prints and exits with the usual codes. `parse_from` calls it for you; `try_parse_from` hands the error back. A handler that wants help and version to print and exit, while argument errors become values, implements `FatalError` on its own error type — usually by delegating to `ParseError::exit` for the wrapped parse error and printing its own variants in the same shape. See `examples/try_parse.rs` and `examples/subcommands_error.rs`.
 
 ## Subcommands
 
