@@ -1,6 +1,6 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use miniargs::{arg, args, ArgParser, ParseError};
+use miniargs::{arg, args, ArgParser, FatalError, ParseError};
 
 args! {
 	#[derive(Debug)]
@@ -24,17 +24,21 @@ enum AppError {
 	Domain(String),
 }
 
-impl AppError {
+impl FatalError for AppError {
 	fn exit(self) -> ! {
 		match self {
 			AppError::Parse(e) => e.exit(),
-			AppError::Domain(m) => {
-				eprintln!("error: {m}");
-				eprintln!("Run with --help for usage.");
-				std::process::exit(2);
-			}
+			AppError::Domain(msg) => ParseError::User(msg).exit(),
 		}
 	}
+}
+
+fn main() {
+	let mut parser = ArgParser::new("mytool");
+	parser.set_version(env!("CARGO_PKG_VERSION"));
+	let argv: Vec<OsString> = std::env::args_os().collect();
+	let config = config(&mut parser, &argv).unwrap_or_else(|e| e.exit());
+	run(config);
 }
 
 /// Parse and validate. Every outcome (including `--help` and `--version`)
@@ -49,22 +53,12 @@ fn config(parser: &mut ArgParser, argv: &[OsString]) -> Result<Config, AppError>
 	Ok(Config { target: args.target, verbose: args.verbose, files: args.files })
 }
 
-fn main() {
-	let mut parser = ArgParser::new("mytool");
-	parser.set_version(env!("CARGO_PKG_VERSION"));
-	let argv: Vec<OsString> = std::env::args_os().collect();
-	let config = config(&mut parser, &argv).unwrap_or_else(|e| e.exit());
-	run(config);
-}
-
 fn run(config: Config) {
-	let verb = if config.verbose {
-		"Building"
-	} else {
-		"Skipping"
-	};
 	for file in &config.files {
-		println!("{verb} {file:?} for {}", config.target);
+		println!("Building {file:?} for {}", config.target);
+	}
+	if config.verbose {
+		println!("{} file(s) total", config.files.len());
 	}
 }
 
