@@ -8,10 +8,11 @@ A small, zero-dependency argument parser for Rust.
 
 ## Design goals
 
-1. **Fast compile, zero or minimal deps.** No proc macros, no `syn`.
-2. **Small.** One file.
+1. **No proc macros, no `syn`.** Fast compile, zero dependencies.
+2. **No `unsafe`, zero or minimal platform-specific code.**
 3. **Convenient.** Typed keys, DRY declarations, auto help.
-4. **Correct on non-UTF-8 input.** `PathBuf` and `OsString` accept arbitrary bytes, while `String` requires UTF-8.
+4. **Small.** One file.
+5. **Correct on non-UTF-8 input.** `PathBuf` and `OsString` accept arbitrary bytes, while `String` requires UTF-8.
 
 ## Installation
 

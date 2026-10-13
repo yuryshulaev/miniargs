@@ -912,15 +912,34 @@ fn run_with_dispatches_to_handler() {
 }
 
 // ---------------------------------------------------------------------------
-// Non-UTF-8 handling (Unix only)
+// Non-UTF-8 handling
 //
-// Constructing a non-UTF-8 `OsString` from raw bytes uses
-// `std::os::unix::ffi::OsStringExt::from_vec`, which doesn't exist on Windows.
-// The scenario itself is also Unix-specific: Windows `OsString` is WTF-8, and
-// `args_os()` never yields the raw-byte paths that motivate this design.
+// The parser receives `OsString`s and must not assume they are UTF-8. On Unix
+// an arbitrary byte round-trips through `OsString::from_vec`; on Windows an
+// unpaired surrogate does the same job in WTF-8. The one `cfg` below isolates
+// that platform difference so the tests themselves don't need their own.
 // ---------------------------------------------------------------------------
 
-#[cfg(unix)]
+/// `prefix` + one non-UTF-8 unit + `suffix`, as an `OsString`.
+fn non_utf8(prefix: &str, suffix: &str) -> OsString {
+	#[cfg(unix)]
+	{
+		use std::os::unix::ffi::OsStringExt;
+		let mut bytes = prefix.as_bytes().to_vec();
+		bytes.push(0xff);
+		bytes.extend(suffix.as_bytes());
+		OsString::from_vec(bytes)
+	}
+	#[cfg(windows)]
+	{
+		use std::os::windows::ffi::OsStringExt;
+		let mut wide: Vec<u16> = prefix.encode_utf16().collect();
+		wide.push(0xD800); // lone high surrogate; not valid UTF-8
+		wide.extend(suffix.encode_utf16());
+		OsString::from_wide(&wide)
+	}
+}
+
 fn parse_err_os(p: &ArgParser, args: Vec<OsString>) -> String {
 	let mut argv: Vec<OsString> = vec!["test".into()];
 	argv.extend(args);
@@ -931,102 +950,57 @@ fn parse_err_os(p: &ArgParser, args: Vec<OsString>) -> String {
 	}
 }
 
-#[cfg(unix)]
 #[test]
 fn non_utf8_inline_value_suggests_separate_form() {
-	use std::os::unix::ffi::OsStringExt;
-
 	let mut p = ArgParser::new("test");
-	let _config = p.optional::<PathBuf>("config", Arg { ..Default::default() });
-
-	let mut raw = b"--config=".to_vec();
-	raw.push(0xff);
-	raw.push(0xfe);
-	let e = parse_err_os(&p, vec![OsString::from_vec(raw)]);
-
+	let _config = p.optional::<PathBuf>("config", arg());
+	let e = parse_err_os(&p, vec![non_utf8("--config=", "")]);
 	assert!(e.contains("non-UTF-8 value in --config"), "{e}");
 	assert!(e.contains("--config VALUE"), "{e}");
 }
 
-#[cfg(unix)]
 #[test]
 fn non_utf8_short_inline_value_names_the_flag() {
-	use std::os::unix::ffi::OsStringExt;
-
 	let mut p = ArgParser::new("test");
-	let _config = p.optional::<PathBuf>("config", Arg { short: 'c', ..Default::default() });
-
-	// -c=<non-utf8>
-	let mut raw = b"-c=".to_vec();
-	raw.push(0xff);
-	let e = parse_err_os(&p, vec![OsString::from_vec(raw)]);
-
+	let _config = p.optional::<PathBuf>("config", arg().short('c'));
+	let e = parse_err_os(&p, vec![non_utf8("-c=", "")]);
 	assert!(e.contains("non-UTF-8 value in -c"), "{e}");
 	assert!(e.contains("-c VALUE"), "{e}");
 }
 
-#[cfg(unix)]
 #[test]
 fn non_utf8_short_glued_value_has_generic_message() {
-	use std::os::unix::ffi::OsStringExt;
-
 	let mut p = ArgParser::new("test");
-	let _config = p.optional::<PathBuf>("config", Arg { short: 'c', ..Default::default() });
-
-	// -c<non-utf8>, no `=`
-	let mut raw = b"-c".to_vec();
-	raw.push(0xff);
-	let e = parse_err_os(&p, vec![OsString::from_vec(raw)]);
-
+	let _config = p.optional::<PathBuf>("config", arg().short('c'));
+	let e = parse_err_os(&p, vec![non_utf8("-c", "")]);
 	assert!(e.contains("non-UTF-8"), "{e}");
 }
 
-#[cfg(unix)]
 #[test]
 fn non_utf8_option_name_has_generic_message() {
-	use std::os::unix::ffi::OsStringExt;
-
 	let p = ArgParser::new("test");
-
-	let mut raw = b"--".to_vec();
-	raw.push(0xff);
-	let e = parse_err_os(&p, vec![OsString::from_vec(raw)]);
-
+	let e = parse_err_os(&p, vec![non_utf8("--", "")]);
 	assert!(e.contains("non-UTF-8 option"), "{e}");
 }
 
-#[cfg(unix)]
 #[test]
 fn non_utf8_path_in_separate_form_works() {
-	use std::os::unix::ffi::OsStringExt;
-
 	let mut p = ArgParser::new("test");
-	let config = p.optional::<PathBuf>("config", Arg { ..Default::default() });
-
-	let mut path = b"/tmp/".to_vec();
-	path.push(0xff);
-	path.push(b'.');
-	path.extend(b"toml");
-	let expected = PathBuf::from(OsString::from_vec(path.clone()));
-
-	let argv: Vec<OsString> = vec!["test".into(), "--config".into(), OsString::from_vec(path)];
+	let config = p.optional::<PathBuf>("config", arg());
+	let path = non_utf8("/tmp/", ".toml");
+	let expected = PathBuf::from(path.clone());
+	let argv: Vec<OsString> = vec!["test".into(), "--config".into(), path];
 	let a = p.try_parse(argv).unwrap();
 	assert_eq!(config.get(&a), Some(expected));
 }
 
-#[cfg(unix)]
 #[test]
 fn non_utf8_path_after_separator_works() {
-	use std::os::unix::ffi::OsStringExt;
-
 	let mut p = ArgParser::new("test");
-	let rest = p.positional_variadic::<PathBuf>("rest", Arg { ..Default::default() });
-
-	let mut path = b"/tmp/".to_vec();
-	path.push(0xfe);
-	let expected = PathBuf::from(OsString::from_vec(path.clone()));
-
-	let argv: Vec<OsString> = vec!["test".into(), "--".into(), OsString::from_vec(path)];
+	let rest = p.positional_variadic::<PathBuf>("rest", arg());
+	let path = non_utf8("/tmp/", "");
+	let expected = PathBuf::from(path.clone());
+	let argv: Vec<OsString> = vec!["test".into(), "--".into(), path];
 	let a = p.try_parse(argv).unwrap();
 	assert_eq!(rest.get(&a), vec![expected]);
 }
