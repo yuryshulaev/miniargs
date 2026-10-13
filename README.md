@@ -507,13 +507,20 @@ Usage: pack [OPTIONS] <output> [inputs...]
 
 Programmer errors (calling `get` on an unregistered key, registering a duplicate argument, declaring a required positional after an optional one) panic with a descriptive message. These are bugs in your code, not user input, and only appear during development.
 
-To test the parse path in-process, use `Args::try_parse_from`. It returns `Result<Args, ParseError>` for every outcome, including `--help` and `--version`. The terminal variants carry their text, so a test can assert on the help output without a subprocess:
+To test the parse path in-process, use `Args::try_parse_from`. It returns `Result<Args, ParseError>` for every outcome, including `--help` and `--version`, so a function that wraps it can be called from a test with a synthetic argv and won't call `process::exit`:
 
 ```rust
-let mut parser = ArgParser::new("mytool");
-let err = Args::try_parse_from(&mut parser, ["mytool", "--help"]).unwrap_err();
-let ParseError::Help(text) = err else { panic!() };
-assert!(text.contains("--help"));
+fn config(argv: &[OsString]) -> Result<Config, ParseError> {
+    let mut parser = ArgParser::new("mytool");
+    let args = Args::try_parse_from(&mut parser, argv)?;
+    Ok(Config::from(args))
+}
+
+#[test]
+fn rejects_bad_port() {
+    let argv = ["mytool", "--port", "abc"].map(OsString::from);
+    assert!(config(&argv).is_err());
+}
 ```
 
 `ParseError::exit` prints and exits with the usual codes. `parse_from` calls it for you; `try_parse_from` hands the error back. A handler that wants help and version to print and exit, while argument errors become values, implements `FatalError` on its own error type — usually by delegating to `ParseError::exit` for the wrapped parse error and printing its own variants in the same shape. See `examples/try_parse.rs` and `examples/subcommands_error.rs`.
@@ -607,8 +614,6 @@ Because the type and presence policy live on the key, the compiler catches three
 - Asking for a flag with `get` on a value key, or vice versa (different types).
 - Reading a `u32` argument as a `String` (the key's `get` returns `u32`; assigning to a `String` fails).
 - A typo in the variable name (`hots.get(&args)` is `cannot find value`).
-
-The only thing that isn't checked at compile time is registration, and even that is closed off: the only way to construct a key is via a registration method, which registers the argument as a side effect.
 
 ## What's not supported
 
