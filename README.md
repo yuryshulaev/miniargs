@@ -186,6 +186,35 @@ jobs: default(1u32, arg().short('j').type_name("count"))
 // error: invalid value 'abc' for --jobs (expected count): invalid digit found in string
 ```
 
+## Typed keys
+
+Each registration method returns a key whose type parameter records the value type:
+
+```rust
+let jobs = parser.default("jobs", 1u32, arg());
+// jobs: DefaultKey<u32>
+
+let host = parser.required::<String>("host", arg());
+// host: RequiredKey<String>
+
+let verbose = parser.flag("verbose", arg());
+// verbose: FlagKey
+```
+
+Reading a value is a single call with no string lookup:
+
+```rust
+let jobs: u32 = jobs.get(&args);
+let host: String = host.get(&args);
+let verbose: bool = verbose.get(&args);
+```
+
+Because the type and presence policy live on the key, the compiler catches three classes of mistakes at build time:
+
+- Asking for a flag with `get` on a value key, or vice versa (different types).
+- Reading a `u32` argument as a `String` (the key's `get` returns `u32`; assigning to a `String` fails).
+- A typo in the variable name (`hots.get(&args)` is `cannot find value`).
+
 ## Validation
 
 Two kinds of checks: per-argument and cross-argument.
@@ -327,7 +356,7 @@ Options:
 Report bugs at https://github.com/you/pack/issues
 ```
 
-All three accept `impl Into<Cow<'static, str>>`, so `&'static str` literals and `format!(...)` both work. Multi-line text works with `\n`, and nothing is reflowed — what you write is what appears.
+All three accept `impl Into<Cow<'static, str>>`, so `&'static str` literals and `format!(...)` both work. Multi-line text works with `\n`, and nothing is reflowed — what you write is what appears.
 
 ## Enumerated values
 
@@ -350,7 +379,7 @@ Use it like any other type:
 let color = parser.default("color", Color::Auto, arg().desc("Color mode"));
 ```
 
-The value strings appear once, in the macro call. Everything else — the enum, `Choice`, `Display`, the help hint, the "requires a value" error — derives from that one list.
+The value strings appear once, in the macro call. Everything else — the enum, `Choice`, `Display`, the help hint, the "requires a value" error — derives from that one list.
 
 ```
 $ pack --color wef
@@ -523,7 +552,7 @@ fn rejects_bad_port() {
 }
 ```
 
-`ParseError::exit` prints and exits with the usual codes. `parse_from` calls it for you; `try_parse_from` hands the error back. A handler that wants help and version to print and exit, while argument errors become values, implements `FatalError` on its own error type — usually by delegating to `ParseError::exit` for the wrapped parse error and printing its own variants in the same shape. See `examples/try_parse.rs` and `examples/subcommands_error.rs`.
+`ParseError::exit` prints and exits with the usual codes. `parse_from` calls it for you; `try_parse_from` hands the error back. See `examples/try_parse.rs`.
 
 ## Subcommands
 
@@ -571,7 +600,7 @@ fn cmd_add(prog: &str, argv: &[OsString]) {
 
 ### Value-returning handlers
 
-Handlers can return a value instead of printing and exiting. Declare the dispatcher as `Dispatcher<Result<Outcome, E>>` where `E: Display`, have each handler return `Result<Outcome, E>`, and `main` gets the outcome back:
+Handlers can return a value instead of printing and exiting. Declare the dispatcher as `Dispatcher<Result<Outcome, E>>` where `E: FatalError`, have each handler return `Result<Outcome, E>`, and `main` gets the outcome back:
 
 ```rust
 fn main() {
@@ -584,36 +613,20 @@ fn main() {
 
 The error, help, version, and unknown-command paths still exit with the usual codes. Only the successful outcome comes back. `dispatch_with(argv)` returns the same information without exiting at all — `Dispatch::Ran(value)`, `Dispatch::Help`, `Dispatch::Version`, or `Dispatch::Unknown(name)` — which is what tests use.
 
+When an error type wraps `ParseError`, implement `FatalError` on it so help and version still print and exit 0 while the wrapper's other variants print in the same shape:
+
+```rust
+impl FatalError for AppError {
+    fn exit(self) -> ! {
+        match self {
+            AppError::Parse(e) => e.exit(),
+            AppError::Domain(msg) => ParseError::User(msg).exit(),
+        }
+    }
+}
+```
+
 See `examples/subcommands.rs`, `examples/subcommands_value.rs`, and `examples/subcommands_error.rs` for the imperative, value-returning, and custom-error variants.
-
-## Typed keys
-
-Each registration method returns a key whose type parameter records the value type:
-
-```rust
-let jobs = parser.default("jobs", 1u32, arg());
-// jobs: DefaultKey<u32>
-
-let host = parser.required::<String>("host", arg());
-// host: RequiredKey<String>
-
-let verbose = parser.flag("verbose", arg());
-// verbose: FlagKey
-```
-
-Reading a value is a single call with no string lookup:
-
-```rust
-let jobs: u32 = jobs.get(&args);
-let host: String = host.get(&args);
-let verbose: bool = verbose.get(&args);
-```
-
-Because the type and presence policy live on the key, the compiler catches three classes of mistakes at build time:
-
-- Asking for a flag with `get` on a value key, or vice versa (different types).
-- Reading a `u32` argument as a `String` (the key's `get` returns `u32`; assigning to a `String` fails).
-- A typo in the variable name (`hots.get(&args)` is `cannot find value`).
 
 ## What's not supported
 
