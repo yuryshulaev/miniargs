@@ -1324,38 +1324,26 @@ fn parse_result<T: ParseArg>(
 // parse_args!
 // ============================================================================
 
-/// Parse arguments and build an instance of `$T`.
+/// Parse arguments and build an instance of `$T`, returning
+/// `Result<$T, ParseError>` instead of exiting. This is the primitive that
+/// [`parse_args!`](crate::parse_args) and the constructors from
+/// [`args!`](crate::args) build on.
 ///
 /// ```ignore
-/// let args = parse_args!(parser; Args {
+/// let args = try_parse_args!(parser; Args {
 ///     host: required(arg().short('H').desc("Host")),
 ///     jobs: default(1, arg().short('j')).validate(positive),
 /// });
 /// ```
 ///
-/// The struct field name becomes the CLI argument name, converted to
-/// kebab-case: `file_name` becomes `--file-name`. Raw identifiers lose the
-/// `r#` prefix: `r#move` becomes `--move`. The struct field type fixes the
-/// key's type parameter, so no turbofish is needed.
-///
-/// Configuration methods chained after the call are appended to the
-/// registration expression, so `default(1, arg()).validate(positive)`
-/// expands to `parser.default(...).validate(positive)`.
-///
-/// For tests, use the two-argument form with an explicit argv:
-///
-/// ```ignore
-/// let args = parse_args!(parser, argv; Args { ... });
-/// ```
-///
 /// `$parser` is a parameter because `macro_rules!` hygiene prevents the macro
 /// body from referring to a caller binding by name.
 #[macro_export]
-macro_rules! parse_args {
+macro_rules! try_parse_args {
 	($parser:ident; $T:ident {
 		$($field:ident : $method:ident ( $($tail:tt)* ) $(. $chain:ident ( $($cargs:tt)* ))* ),* $(,)?
 	}) => {
-		$crate::parse_args!($parser, ::std::env::args_os(); $T {
+		$crate::try_parse_args!($parser, ::std::env::args_os(); $T {
 			$($field: $method ( $($tail)* ) $(. $chain ( $($cargs)* ))*),*
 		})
 	};
@@ -1370,9 +1358,49 @@ macro_rules! parse_args {
 				$($tail)*
 			)$(.$chain($($cargs)*))*;
 		)*
-		let args = $parser.parse($argv);
-		$T { $($field: $field.get(&args),)* }
+		// The closure lets the inner `?` return a `Result` from the macro
+		// expansion, so the caller isn't required to be in a
+		// `Result`-returning function.
+		(|| -> ::core::result::Result<$T, $crate::ParseError> {
+			let args = $parser.try_parse($argv)?;
+			::core::result::Result::Ok($T { $($field: $field.try_get(&args)?,)* })
+		})()
 	}};
+}
+
+/// Parse arguments and build an instance of `$T`, exiting on failure.
+///
+/// ```ignore
+/// let args = parse_args!(parser; Args {
+///     host: required(arg().short('H').desc("Host")),
+///     jobs: default(1, arg().short('j')).validate(positive),
+/// });
+/// ```
+///
+/// [`try_parse_args!`](crate::try_parse_args) is the same macro without the
+/// exit.
+///
+/// `$parser` is a parameter because `macro_rules!` hygiene prevents the macro
+/// body from referring to a caller binding by name.
+#[macro_export]
+macro_rules! parse_args {
+	($parser:ident; $T:ident {
+		$($field:ident : $method:ident ( $($tail:tt)* ) $(. $chain:ident ( $($cargs:tt)* ))* ),* $(,)?
+	}) => {
+		$crate::parse_args!($parser, ::std::env::args_os(); $T {
+			$($field: $method ( $($tail)* ) $(. $chain ( $($cargs)* ))*),*
+		})
+	};
+	($parser:ident, $argv:expr; $T:ident {
+		$($field:ident : $method:ident ( $($tail:tt)* ) $(. $chain:ident ( $($cargs:tt)* ))* ),* $(,)?
+	}) => {
+		match $crate::try_parse_args!($parser, $argv; $T {
+			$($field: $method ( $($tail)* ) $(. $chain ( $($cargs)* ))*),*
+		}) {
+			::core::result::Result::Ok(args) => args,
+			::core::result::Result::Err(e) => e.exit(),
+		}
+	};
 }
 
 // ============================================================================

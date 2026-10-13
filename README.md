@@ -296,19 +296,35 @@ let args = {
 
 The struct field type drives the parser type (`file_name: String` instantiates `required::<String>`), so nothing is written twice. The parser is passed explicitly because `macro_rules!` hygiene prevents the macro body from referring to a caller binding by name.
 
-For tests, use the two-argument form with an explicit argv:
+A two-argument form takes an explicit argv:
 
 ```rust
-let argv = vec![OsString::from("pack"), OsString::from("-v"), OsString::from("out.bin")];
 let args = parse_args!(parser, argv; Args {
-    verbose: flag(arg().short('v')),
-    output: positional(arg()),
+    file_name: required(arg().short('f').desc("File to process")),
 });
 ```
 
+`argv` must start with the program name. The failure behavior is the same as the one-argument form.
+
+### Value-returning form
+
+`try_parse_args!` has the same field syntax but returns `Result<Args, ParseError>` for the caller to handle instead of exiting:
+
+```rust
+let argv = vec![OsString::from("pack"), OsString::from("-v"), OsString::from("out.bin")];
+let args = try_parse_args!(parser, argv; Args {
+    verbose: flag(arg().short('v')),
+    output: positional(arg()),
+})
+.unwrap();
+assert!(args.verbose);
+```
+
+Both forms exist because parse failures have two audiences. `parse_args!` is for `main`, where the right response is to print the error and exit. `try_parse_args!` is for a function that wants to see the error itself — one that's called from `main` and from tests, or that wraps the parse error in a larger error type. The section on `FatalError` in Subcommands shows how the second case routes terminal errors like `--help` back to the standard behavior.
+
 ## Without macros
 
-Everything works without either macro. Call the same methods directly, then read each key:
+Everything works without the macros. Call the same methods directly, then read each key:
 
 ```rust
 let mut parser = ArgParser::new("pack");

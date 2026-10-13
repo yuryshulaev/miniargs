@@ -796,14 +796,16 @@ fn kebab_strips_raw_identifier_prefix() {
 }
 
 // ---------------------------------------------------------------------------
-// kebab integration with parse_args!
+// kebab integration with the macros
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 struct KebabArgs {
 	file_name: String,
 	dry_run: bool,
 }
 
+#[derive(Debug)]
 struct PlainArgs {
 	host: String,
 }
@@ -854,6 +856,40 @@ fn kebab_positional_name_appears_in_help() {
 	parser.positional::<String>(kebab("input_file"), Arg { ..Default::default() });
 	let h = parser.help();
 	assert!(h.contains("<input-file>"), "{h}");
+}
+
+// ---------------------------------------------------------------------------
+// try_parse_args!
+// ---------------------------------------------------------------------------
+
+#[test]
+fn try_parse_args_returns_ok() {
+	let mut parser = ArgParser::new("test");
+	let args = try_parse_args!(parser, argv(&["--host", "x"]); PlainArgs {
+		host: required(arg()),
+	})
+	.unwrap();
+	assert_eq!(args.host, "x");
+}
+
+#[test]
+fn try_parse_args_propagates_user_error() {
+	let mut parser = ArgParser::new("test");
+	let e = try_parse_args!(parser, argv(&[]); PlainArgs {
+		host: required(arg()),
+	})
+	.unwrap_err();
+	assert!(matches!(e, ParseError::User(_)));
+}
+
+#[test]
+fn try_parse_args_propagates_help() {
+	let mut parser = ArgParser::new("test");
+	let e = try_parse_args!(parser, argv(&["--help"]); PlainArgs {
+		host: required(arg()),
+	})
+	.unwrap_err();
+	assert!(matches!(e, ParseError::Help(_)));
 }
 
 // ---------------------------------------------------------------------------
