@@ -15,7 +15,7 @@ use std::{
 	ffi::{OsStr, OsString},
 	fmt::{self, Display},
 	marker::PhantomData,
-	path::PathBuf,
+	path::{Path, PathBuf},
 };
 
 // ============================================================================
@@ -1614,7 +1614,12 @@ impl<R> Dispatcher<R> {
 
 	fn program_from(&self, argv: &[OsString]) -> String {
 		argv.first()
-			.map(|p| p.to_string_lossy().into_owned())
+			.map(|p| {
+				Path::new(p).file_stem().map_or_else(
+					|| p.to_string_lossy().into_owned(),
+					|s| s.to_string_lossy().into_owned(),
+				)
+			})
 			.unwrap_or_else(|| self.program.clone())
 	}
 

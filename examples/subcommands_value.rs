@@ -58,7 +58,7 @@ fn app() -> Dispatcher<Result<Outcome, ParseError>> {
 }
 
 fn main() {
-	println!("{:#?}", app().run_with(std::env::args_os()));
+	println!("{:#?}", app().run());
 }
 
 // Run with: cargo test --example subcommands_value

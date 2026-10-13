@@ -89,7 +89,7 @@ fn app() -> Dispatcher<Result<Outcome, AppError>> {
 }
 
 fn main() {
-	match app().run_with(std::env::args_os()) {
+	match app().run() {
 		Outcome::Added { collection, files } => {
 			for f in &files {
 				println!("Added {f:?} to {collection}");
