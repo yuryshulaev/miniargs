@@ -911,6 +911,42 @@ fn run_with_dispatches_to_handler() {
 	assert!(RAN.with(|c| c.get()));
 }
 
+#[test]
+fn dispatch_returns_handler_value() {
+	fn handler(_prog: &str, _argv: &[OsString]) -> u32 {
+		42
+	}
+
+	let mut d = Dispatcher::new("test");
+	d.command("go", handler, "Run");
+	match d.dispatch_with(["test", "go"]) {
+		Dispatch::Ran(42) => {}
+		other => panic!("expected Ran(42), got {:?}", matches!(other, Dispatch::Help)),
+	}
+}
+
+#[test]
+fn dispatch_help_is_a_variant() {
+	let d: Dispatcher<()> = Dispatcher::new("test");
+	assert!(matches!(d.dispatch_with(["test", "--help"]), Dispatch::Help));
+}
+
+#[test]
+fn dispatch_unknown_names_input() {
+	let d: Dispatcher<()> = Dispatcher::new("test");
+	assert!(matches!(
+		d.dispatch_with(["test", "bogus"]),
+		Dispatch::Unknown(ref name) if name == "bogus"
+	));
+}
+
+#[test]
+fn dispatch_unit_handler_returns_unit() {
+	let mut d: Dispatcher<()> = Dispatcher::new("test");
+	d.command("go", noop, "Run");
+	assert!(matches!(d.dispatch_with(["test", "go"]), Dispatch::Ran(())));
+}
+
 // ---------------------------------------------------------------------------
 // Non-UTF-8 handling
 //

@@ -524,7 +524,7 @@ fn main() {
     dispatcher.command("add", cmd_add, "Add files");
     dispatcher.command("remove", cmd_remove, "Remove files");
     dispatcher.help_command("help", "Print help");
-	dispatcher.run();
+    dispatcher.run();
 }
 
 fn cmd_add(prog: &str, argv: &[OsString]) {
@@ -542,7 +542,22 @@ fn cmd_add(prog: &str, argv: &[OsString]) {
 
 `help_command` is optional. Without it, `-h`, `--help`, `--`, and no arguments still print help; only the word `myprog help` stops working. When registered, the command appears in the help output alongside the others.
 
-See `examples/subcommands.rs`.
+### Value-returning handlers
+
+Handlers can return a value instead of printing and exiting. Declare the dispatcher as `Dispatcher<Result<Outcome, ParseError>>`, have each handler return `Result<Outcome, ParseError>`, and `main` gets the outcome back:
+
+```rust
+fn main() {
+    match app().run_with(std::env::args_os()) {
+        Outcome::Added { collection, files } => { /* ... */ }
+        Outcome::Removed { collection } => println!("Removed {collection}"),
+    }
+}
+```
+
+The error, help, and unknown-command paths still exit with the usual codes. Only the successful outcome comes back. `dispatch_with(argv)` returns the same information without exiting at all — `Dispatch::Ran(value)`, `Dispatch::Help`, or `Dispatch::Unknown(name)` — which is what tests use.
+
+See `examples/subcommands.rs`, `examples/subcommands_value.rs`, and `examples/subcommands_error.rs` for the imperative, value-returning, and custom-error variants.
 
 ## Typed keys
 
