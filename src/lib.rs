@@ -355,9 +355,8 @@ fn run_validators<V>(parser: &ArgParser, slot: &Slot, validators: &[Validator<V>
 
 // --- presence markers -------------------------------------------------------
 
-/// A single-value key with no default. `get` panics if the argument is
-/// missing, which can only happen if you call `get` on a key that was
-/// registered as `optional`.
+/// A required single-value key. `get` panics if the argument is missing,
+/// which can only happen if the parser was bypassed.
 pub struct Required;
 
 /// An optional single-value key. `get` returns `Option<T>`.
@@ -367,23 +366,27 @@ pub struct Optional;
 /// argument is missing.
 pub struct Defaulted;
 
-/// A single-value key. The `P` marker selects what `get` returns:
-/// `Key<T, Required>` and `Key<T, Defaulted>` return `T`, `Key<T, Optional>`
-/// returns `Option<T>`.
-pub struct Key<T, P = Required> {
+/// A repeated key. `get` returns every value in order.
+pub struct Repeated;
+
+/// A key over a value of type `V`, with `P` selecting the presence policy.
+///
+/// - `Key<T, Required>` and `Key<T, Defaulted>` — `get` returns `T`.
+/// - `Key<T, Optional>` — `get` returns `Option<T>`.
+/// - `Key<Vec<T>, Repeated>` — `get` returns `Vec<T>`.
+pub struct Key<V, P = Required> {
 	slot: Slot,
 	type_name: Option<&'static str>,
-	default: Option<T>,
-	validators: Vec<Validator<T>>,
+	default: Option<V>,
+	validators: Vec<Validator<V>>,
 	_p: PhantomData<P>,
 }
 
-/// A repeated key. `get` returns every value in order.
-pub struct RepeatedKey<T> {
-	slot: Slot,
-	type_name: Option<&'static str>,
-	validators: Vec<Validator<Vec<T>>>,
-}
+/// Backward-compatible aliases.
+pub type RequiredKey<T> = Key<T, Required>;
+pub type OptionalKey<T> = Key<T, Optional>;
+pub type DefaultKey<T> = Key<T, Defaulted>;
+pub type RepeatedKey<T> = Key<Vec<T>, Repeated>;
 
 /// A boolean flag.
 #[derive(Clone)]
@@ -391,27 +394,25 @@ pub struct FlagKey {
 	name: Cow<'static, str>,
 }
 
-/// Backward-compatible aliases. `RequiredKey<T>` is `Key<T, Required>`, and
-/// so on.
-pub type RequiredKey<T> = Key<T, Required>;
-pub type OptionalKey<T> = Key<T, Optional>;
-pub type DefaultKey<T> = Key<T, Defaulted>;
+impl<V, P> Key<V, P> {
+	fn new(slot: Slot, type_name: Option<&'static str>, default: Option<V>) -> Self {
+		Key { slot, type_name, default, validators: Vec::new(), _p: PhantomData }
+	}
 
-impl<T, P> Key<T, P> {
 	/// Run a check on the parsed value. On failure, the process exits with
 	/// code 2 and prints `invalid <label>: <message>`.
 	///
 	/// Multiple calls accumulate; all validators run in order and the first
-	/// failure exits. The check runs only when the argument is present, or
-	/// on the default when it is absent.
-	pub fn validate(mut self, f: Validator<T>) -> Self {
+	/// failure exits. The check runs on the parsed value, or on the default
+	/// when the argument is absent.
+	pub fn validate(mut self, f: Validator<V>) -> Self {
 		self.validators.push(f);
 		self
 	}
 }
 
-impl<T: ParseArg, P> Key<T, P> {
-	fn get_present(&self, args: &ParsedArgs<'_>) -> Option<T> {
+impl<V: ParseArg, P> Key<V, P> {
+	fn get_present(&self, args: &ParsedArgs<'_>) -> Option<V> {
 		self.slot.single(args).map(|raw| {
 			let value = parse_or_exit(args.parser, raw, &self.slot, self.type_name);
 			run_validators(args.parser, &self.slot, &self.validators, &value);
@@ -451,23 +452,7 @@ impl<T: ParseArg + Clone> Key<T, Defaulted> {
 	}
 }
 
-impl<T> RepeatedKey<T> {
-	/// Run a check on the parsed values.
-	pub fn validate(mut self, f: Validator<Vec<T>>) -> Self {
-		self.validators.push(f);
-		self
-	}
-
-	pub fn len(&self, args: &ParsedArgs<'_>) -> usize {
-		self.slot.all(args).len()
-	}
-
-	pub fn is_empty(&self, args: &ParsedArgs<'_>) -> bool {
-		self.slot.all(args).is_empty()
-	}
-}
-
-impl<T: ParseArg> RepeatedKey<T> {
+impl<T: ParseArg> Key<Vec<T>, Repeated> {
 	/// Read every value in order.
 	pub fn get(&self, args: &ParsedArgs<'_>) -> Vec<T> {
 		let values: Vec<T> = self
@@ -478,6 +463,14 @@ impl<T: ParseArg> RepeatedKey<T> {
 			.collect();
 		run_validators(args.parser, &self.slot, &self.validators, &values);
 		values
+	}
+
+	pub fn len(&self, args: &ParsedArgs<'_>) -> usize {
+		self.slot.all(args).len()
+	}
+
+	pub fn is_empty(&self, args: &ParsedArgs<'_>) -> bool {
+		self.slot.all(args).is_empty()
 	}
 }
 
@@ -665,13 +658,7 @@ impl ArgParser {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
 		self.push_named(name.clone(), arg, true, true, false, T::values(), None, false);
-		Key {
-			slot: Slot::Named(name),
-			type_name: tn,
-			default: None,
-			validators: Vec::new(),
-			_p: PhantomData,
-		}
+		Key::new(Slot::Named(name), tn, None)
 	}
 
 	/// A value argument with a default. Absent means the default.
@@ -685,13 +672,7 @@ impl ArgParser {
 		let tn = resolve_type_name::<T>(arg.type_name);
 		let display = default.to_string();
 		self.push_named(name.clone(), arg, true, false, false, T::values(), Some(display), false);
-		Key {
-			slot: Slot::Named(name),
-			type_name: tn,
-			default: Some(default),
-			validators: Vec::new(),
-			_p: PhantomData,
-		}
+		Key::new(Slot::Named(name), tn, Some(default))
 	}
 
 	/// An optional value argument. Absent means `None`.
@@ -703,13 +684,7 @@ impl ArgParser {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
 		self.push_named(name.clone(), arg, true, false, false, T::values(), None, false);
-		Key {
-			slot: Slot::Named(name),
-			type_name: tn,
-			default: None,
-			validators: Vec::new(),
-			_p: PhantomData,
-		}
+		Key::new(Slot::Named(name), tn, None)
 	}
 
 	/// A repeated value argument. Every occurrence accumulates.
@@ -717,11 +692,11 @@ impl ArgParser {
 		&mut self,
 		name: impl Into<Cow<'static, str>>,
 		arg: Arg,
-	) -> RepeatedKey<T> {
+	) -> Key<Vec<T>, Repeated> {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
 		self.push_named(name.clone(), arg, true, false, true, T::values(), None, false);
-		RepeatedKey { slot: Slot::Named(name), type_name: tn, validators: Vec::new() }
+		Key::new(Slot::Named(name), tn, None)
 	}
 
 	/// A hidden optional value argument. Accepted but not listed in help.
@@ -733,13 +708,7 @@ impl ArgParser {
 		let name = name.into();
 		let tn = resolve_type_name::<T>(arg.type_name);
 		self.push_named(name.clone(), arg, true, false, false, T::values(), None, true);
-		Key {
-			slot: Slot::Named(name),
-			type_name: tn,
-			default: None,
-			validators: Vec::new(),
-			_p: PhantomData,
-		}
+		Key::new(Slot::Named(name), tn, None)
 	}
 
 	/// A boolean flag. Present means `true`.
@@ -764,13 +733,11 @@ impl ArgParser {
 	) -> Key<T, Required> {
 		let name = name.into();
 		self.push_positional(name.clone(), &arg, true, false);
-		Key {
-			slot: Slot::Positional { name, index: self.positionals.len() - 1 },
-			type_name: resolve_type_name::<T>(arg.type_name),
-			default: None,
-			validators: Vec::new(),
-			_p: PhantomData,
-		}
+		Key::new(
+			Slot::Positional { name, index: self.positionals.len() - 1 },
+			resolve_type_name::<T>(arg.type_name),
+			None,
+		)
 	}
 
 	/// An optional positional argument.
@@ -781,13 +748,11 @@ impl ArgParser {
 	) -> Key<T, Optional> {
 		let name = name.into();
 		self.push_positional(name.clone(), &arg, false, false);
-		Key {
-			slot: Slot::Positional { name, index: self.positionals.len() - 1 },
-			type_name: resolve_type_name::<T>(arg.type_name),
-			default: None,
-			validators: Vec::new(),
-			_p: PhantomData,
-		}
+		Key::new(
+			Slot::Positional { name, index: self.positionals.len() - 1 },
+			resolve_type_name::<T>(arg.type_name),
+			None,
+		)
 	}
 
 	/// A variadic positional argument. Zero or more slots; must be last.
@@ -795,14 +760,14 @@ impl ArgParser {
 		&mut self,
 		name: impl Into<Cow<'static, str>>,
 		arg: Arg,
-	) -> RepeatedKey<T> {
+	) -> Key<Vec<T>, Repeated> {
 		let name = name.into();
 		self.push_positional(name.clone(), &arg, false, true);
-		RepeatedKey {
-			slot: Slot::Positional { name, index: self.positionals.len() - 1 },
-			type_name: resolve_type_name::<T>(arg.type_name),
-			validators: Vec::new(),
-		}
+		Key::new(
+			Slot::Positional { name, index: self.positionals.len() - 1 },
+			resolve_type_name::<T>(arg.type_name),
+			None,
+		)
 	}
 
 	fn push_positional(
@@ -1355,8 +1320,8 @@ macro_rules! parse_args {
 ///
 /// Each field is `name: Type = builder(...)`. The field name becomes the CLI
 /// name, kebab-cased and stripped of any `r#` prefix (`file_name` →
-/// `--file-name`, `r#move` → `--move`); the field type fixes the builder's
-/// type parameter.
+/// `--file-name`, `r#move` → `--move`); the field type fixes the key's type
+/// parameter.
 ///
 /// - `PackArgs::parse(&mut parser)` reads `std::env::args_os()`.
 /// - `PackArgs::parse_from(&mut parser, argv)` reads an explicit iterator,
