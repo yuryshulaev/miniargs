@@ -583,4 +583,4 @@ The only thing that isn't checked at compile time is registration, and even that
 
 ## License
 
-MIT.
+[Unlicense](https://unlicense.org/).

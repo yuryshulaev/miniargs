@@ -2,7 +2,7 @@
 name = "miniargs"
 version = "0.1.20"
 edition = "2021"
-license = "MIT"
+license = "Unlicense"
 description = "A small, zero-dependency argument parser."
 repository = "https://github.com/yuryshulaev/miniargs"
 categories = ["command-line-interface"]
