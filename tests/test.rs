@@ -358,33 +358,65 @@ fn enum_choice_macro_produces_working_choice() {
 #[test]
 fn long_help() {
 	let f = fixture();
-	assert!(matches!(f.parser.try_parse(argv(&["--help"])), Err(ParseError::Help)));
+	assert!(matches!(f.parser.try_parse(argv(&["--help"])), Err(ParseError::Help(_))));
 }
 
 #[test]
 fn short_help() {
 	let f = fixture();
-	assert!(matches!(f.parser.try_parse(argv(&["-h"])), Err(ParseError::Help)));
+	assert!(matches!(f.parser.try_parse(argv(&["-h"])), Err(ParseError::Help(_))));
 }
 
 #[test]
 fn help_inside_short_cluster() {
 	let f = fixture();
-	assert!(matches!(f.parser.try_parse(argv(&["-vh"])), Err(ParseError::Help)));
+	assert!(matches!(f.parser.try_parse(argv(&["-vh"])), Err(ParseError::Help(_))));
 }
 
 #[test]
 fn version_long() {
 	let mut p = ArgParser::new("test");
 	p.set_version("1.2.3");
-	assert!(matches!(p.try_parse(argv(&["--version"])), Err(ParseError::Version)));
+	assert!(matches!(p.try_parse(argv(&["--version"])), Err(ParseError::Version(_))));
 }
 
 #[test]
 fn version_short() {
 	let mut p = ArgParser::new("test");
 	p.set_version("1.2.3");
-	assert!(matches!(p.try_parse(argv(&["-V"])), Err(ParseError::Version)));
+	assert!(matches!(p.try_parse(argv(&["-V"])), Err(ParseError::Version(_))));
+}
+
+#[test]
+fn help_carries_text() {
+	let f = fixture();
+	let e = f.parser.try_parse(argv(&["--help"])).unwrap_err();
+	let ParseError::Help(text) = e else {
+		panic!("expected Help")
+	};
+	assert!(text.contains("--host"), "{text}");
+}
+
+#[test]
+fn version_carries_text() {
+	let mut p = ArgParser::new("test");
+	p.set_version("1.2.3");
+	let e = p.try_parse(argv(&["--version"])).unwrap_err();
+	let ParseError::Version(v) = e else {
+		panic!("expected Version")
+	};
+	assert_eq!(v, "1.2.3");
+}
+
+// ---------------------------------------------------------------------------
+// ParseError
+// ---------------------------------------------------------------------------
+
+#[test]
+fn exit_terminal_passes_user_through() {
+	let err = ParseError::User("bad value".into());
+	let kept = err.exit_terminal();
+	assert!(matches!(kept, ParseError::User(ref m) if m == "bad value"));
 }
 
 // ---------------------------------------------------------------------------
@@ -947,6 +979,23 @@ fn dispatch_unit_handler_returns_unit() {
 	assert!(matches!(d.dispatch_with(["test", "go"]), Dispatch::Ran(())));
 }
 
+#[test]
+fn dispatch_version_is_a_variant() {
+	let mut d: Dispatcher<()> = Dispatcher::new("test");
+	d.set_version("1.2.3");
+	assert!(matches!(d.dispatch_with(["test", "--version"]), Dispatch::Version));
+	assert!(matches!(d.dispatch_with(["test", "-V"]), Dispatch::Version));
+}
+
+#[test]
+fn dispatch_version_absent_falls_through() {
+	let d: Dispatcher<()> = Dispatcher::new("test");
+	assert!(matches!(
+		d.dispatch_with(["test", "--version"]),
+		Dispatch::Unknown(ref name) if name == "--version"
+	));
+}
+
 // ---------------------------------------------------------------------------
 // Non-UTF-8 handling
 //
@@ -1048,7 +1097,7 @@ fn non_utf8_path_after_separator_works() {
 mod args_macro {
 	use std::path::PathBuf;
 
-	use miniargs::{arg, args, ArgParser};
+	use miniargs::{arg, args, ArgParser, ParseError};
 
 	args! {
 		#[derive(Debug)]
@@ -1121,6 +1170,44 @@ mod args_macro {
 		let argv: Vec<OsString> = vec!["test".into(), "-t".into(), "x".into(), "out.bin".into()];
 		let a = TestArgs::parse_from(&mut ArgParser::new("test"), argv);
 		assert_eq!(a.target, "x");
+	}
+
+	#[test]
+	fn try_parse_from_returns_ok() {
+		let a = TestArgs::try_parse_from(
+			&mut ArgParser::new("test"),
+			["test", "-t", "release", "out.bin"],
+		)
+		.unwrap();
+		assert_eq!(a.target, "release");
+		assert_eq!(a.output, PathBuf::from("out.bin"));
+	}
+
+	#[test]
+	fn try_parse_from_propagates_help() {
+		let e =
+			TestArgs::try_parse_from(&mut ArgParser::new("test"), ["test", "--help"]).unwrap_err();
+		let ParseError::Help(text) = e else {
+			panic!("expected Help");
+		};
+		assert!(text.contains("--target"), "{text}");
+	}
+
+	#[test]
+	fn try_parse_from_propagates_version() {
+		let mut parser = ArgParser::new("test");
+		parser.set_version("1.2.3");
+		let e = TestArgs::try_parse_from(&mut parser, ["test", "--version"]).unwrap_err();
+		let ParseError::Version(v) = e else {
+			panic!("expected Version");
+		};
+		assert_eq!(v, "1.2.3");
+	}
+
+	#[test]
+	fn try_parse_from_propagates_user_error() {
+		let e = TestArgs::try_parse_from(&mut ArgParser::new("test"), ["test"]).unwrap_err();
+		assert!(matches!(e, ParseError::User(_)));
 	}
 }
 

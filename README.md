@@ -228,7 +228,13 @@ if args.config.is_some() && args.env.is_some() {
 
 The example at the top uses `args!`. Each field is `name: Type = builder(...)`; the name becomes the CLI name, kebab-cased.
 
-Two constructors are generated. `parse(&mut parser)` reads `std::env::args_os()`; `parse_from(&mut parser, argv)` reads an explicit iterator for tests, and `argv` must start with the program name.
+Three constructors are generated:
+
+- `parse(&mut parser)` reads `std::env::args_os()`.
+- `parse_from(&mut parser, argv)` reads an explicit iterator and exits on failure.
+- `try_parse_from(&mut parser, argv)` reads an explicit iterator and returns `Result<Self, ParseError>` instead of exiting.
+
+In all three, `argv` must start with the program name.
 
 ```rust
 let argv = vec![OsString::from("pack"), OsString::from("-v")];
@@ -501,6 +507,17 @@ Usage: pack [OPTIONS] <output> [inputs...]
 
 Programmer errors (calling `get` on an unregistered key, registering a duplicate argument, declaring a required positional after an optional one) panic with a descriptive message. These are bugs in your code, not user input, and only appear during development.
 
+To test the parse path in-process, use `Args::try_parse_from`. It returns `Result<Args, ParseError>` for every outcome, including `--help` and `--version`. The terminal variants carry their text, so a test can assert on the help output without a subprocess:
+
+```rust
+let mut parser = ArgParser::new("mytool");
+let err = Args::try_parse_from(&mut parser, ["mytool", "--help"]).unwrap_err();
+let ParseError::Help(text) = err else { panic!() };
+assert!(text.contains("--help"));
+```
+
+`ParseError::exit` prints and exits with the usual codes. `parse_from` calls it for you; `try_parse_from` hands the error back. For a handler that wants help and version to exit but argument errors to propagate, call `ParseError::exit_terminal` on the error before converting it to the handler's error type. See `examples/try_parse.rs`.
+
 ## Subcommands
 
 Dispatch on `argv[1]` with `Dispatcher`. Each command gets its own `ArgParser` and builds its own struct; the dispatcher just routes and generates the top-level help.
@@ -524,6 +541,7 @@ fn main() {
     dispatcher.command("add", cmd_add, "Add files");
     dispatcher.command("remove", cmd_remove, "Remove files");
     dispatcher.help_command("help", "Print help");
+    dispatcher.set_version(env!("CARGO_PKG_VERSION"));
     dispatcher.run();
 }
 
@@ -542,9 +560,11 @@ fn cmd_add(prog: &str, argv: &[OsString]) {
 
 `help_command` is optional. Without it, `-h`, `--help`, `--`, and no arguments still print help; only the word `myprog help` stops working. When registered, the command appears in the help output alongside the others.
 
+`set_version` registers a top-level `-V`/`--version`, same as on `ArgParser`. `dispatch_with` returns `Dispatch::Version` for it.
+
 ### Value-returning handlers
 
-Handlers can return a value instead of printing and exiting. Declare the dispatcher as `Dispatcher<Result<Outcome, ParseError>>`, have each handler return `Result<Outcome, ParseError>`, and `main` gets the outcome back:
+Handlers can return a value instead of printing and exiting. Declare the dispatcher as `Dispatcher<Result<Outcome, E>>` where `E: Display`, have each handler return `Result<Outcome, E>`, and `main` gets the outcome back:
 
 ```rust
 fn main() {
@@ -555,7 +575,7 @@ fn main() {
 }
 ```
 
-The error, help, and unknown-command paths still exit with the usual codes. Only the successful outcome comes back. `dispatch_with(argv)` returns the same information without exiting at all — `Dispatch::Ran(value)`, `Dispatch::Help`, or `Dispatch::Unknown(name)` — which is what tests use.
+The error, help, version, and unknown-command paths still exit with the usual codes. Only the successful outcome comes back. `dispatch_with(argv)` returns the same information without exiting at all — `Dispatch::Ran(value)`, `Dispatch::Help`, `Dispatch::Version`, or `Dispatch::Unknown(name)` — which is what tests use.
 
 See `examples/subcommands.rs`, `examples/subcommands_value.rs`, and `examples/subcommands_error.rs` for the imperative, value-returning, and custom-error variants.
 

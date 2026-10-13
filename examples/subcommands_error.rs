@@ -22,8 +22,13 @@ args! {
 /// What each subcommand produces. This is what tests assert on.
 #[derive(Debug, PartialEq)]
 enum Outcome {
-	Added { collection: String, files: Vec<PathBuf> },
-	Removed { collection: String },
+	Added {
+		collection: String,
+		files: Vec<PathBuf>,
+	},
+	Removed {
+		collection: String,
+	},
 }
 
 /// Everything a handler can fail with: argument errors from the parser,
@@ -72,9 +77,7 @@ fn cmd_remove(prog: &str, argv: &[OsString]) -> Result<Outcome, AppError> {
 	let args = RemoveArgs::try_parse_from(&mut parser, argv)?;
 
 	if !args.force {
-		return Err(AppError::Domain(
-			"refusing to remove without --force".into(),
-		));
+		return Err(AppError::Domain("refusing to remove without --force".into()));
 	}
 
 	Ok(Outcome::Removed { collection: args.collection_name })
@@ -117,10 +120,7 @@ mod tests {
 			d.dispatch_with(argv(&["myprog", "add", "-n", "docs", "a.txt"])),
 			Dispatch::Ran(Ok(Outcome::Added { .. }))
 		));
-		assert!(matches!(
-			d.dispatch_with(argv(&["myprog", "--help"])),
-			Dispatch::Help
-		));
+		assert!(matches!(d.dispatch_with(argv(&["myprog", "--help"])), Dispatch::Help));
 	}
 
 	#[test]

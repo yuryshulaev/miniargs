@@ -435,14 +435,9 @@ impl<T: ParseArg> Key<T, Required> {
 		})
 	}
 
-	/// Read the value. Panics if it is missing, which is a programmer error:
-	/// the parser rejects the command line before `get` runs when a required
-	/// argument wasn't supplied.
+	/// Read the value. Exits 2 on parse or validation failure.
 	pub fn get(&self, args: &ParsedArgs<'_>) -> T {
-		match self.try_get(args) {
-			Ok(v) => v,
-			Err(e) => args.parser.die(e),
-		}
+		self.try_get(args).unwrap_or_else(|e| e.exit())
 	}
 }
 
@@ -452,12 +447,9 @@ impl<T: ParseArg> Key<T, Optional> {
 		self.try_get_present(args)
 	}
 
-	/// Read the value, or `None` if the argument is absent.
+	/// Read the value, or `None`. Exits 2 on parse or validation failure.
 	pub fn get(&self, args: &ParsedArgs<'_>) -> Option<T> {
-		match self.try_get(args) {
-			Ok(v) => v,
-			Err(e) => args.parser.die(e),
-		}
+		self.try_get(args).unwrap_or_else(|e| e.exit())
 	}
 }
 
@@ -475,12 +467,9 @@ impl<T: ParseArg + Clone> Key<T, Defaulted> {
 		}
 	}
 
-	/// Read the value, or the registered default if the argument is absent.
+	/// Read the value, or the default. Exits 2 on parse or validation failure.
 	pub fn get(&self, args: &ParsedArgs<'_>) -> T {
-		match self.try_get(args) {
-			Ok(v) => v,
-			Err(e) => args.parser.die(e),
-		}
+		self.try_get(args).unwrap_or_else(|e| e.exit())
 	}
 }
 
@@ -495,12 +484,9 @@ impl<T: ParseArg> Key<Vec<T>, Repeated> {
 		Ok(values)
 	}
 
-	/// Read every value in order.
+	/// Read every value in order. Exits 2 on parse or validation failure.
 	pub fn get(&self, args: &ParsedArgs<'_>) -> Vec<T> {
-		match self.try_get(args) {
-			Ok(v) => v,
-			Err(e) => args.parser.die(e),
-		}
+		self.try_get(args).unwrap_or_else(|e| e.exit())
 	}
 
 	pub fn len(&self, args: &ParsedArgs<'_>) -> usize {
@@ -546,19 +532,54 @@ struct PositionalDef {
 	variadic: bool,
 }
 
+/// A parse failure. `Help` and `Version` are terminal successes: the text
+/// they carry is what should be printed, and the process should exit 0.
+/// `User` is a real failure; it prints with a `--help` hint and exits 2.
 #[derive(Debug)]
 pub enum ParseError {
-	Help,
-	Version,
+	Help(String),
+	Version(String),
 	User(String),
+}
+
+impl ParseError {
+	/// Print and exit: 0 for `Help` and `Version`, 2 for `User`.
+	pub fn exit(self) -> ! {
+		match self {
+			ParseError::Help(text) => {
+				print!("{text}");
+				std::process::exit(0);
+			}
+			ParseError::Version(v) => {
+				println!("{v}");
+				std::process::exit(0);
+			}
+			ParseError::User(msg) => {
+				eprintln!("error: {msg}");
+				eprintln!("Run with --help for usage.");
+				std::process::exit(2);
+			}
+		}
+	}
+
+	/// Exit 0 if this is `Help` or `Version` — those are terminal, with no
+	/// value to hand back. Return `User` unchanged. Use this in a value
+	/// command that wants help and version to behave the standard way while
+	/// treating argument errors as values.
+	pub fn exit_terminal(self) -> Self {
+		match self {
+			ParseError::Help(_) | ParseError::Version(_) => self.exit(),
+			ParseError::User(_) => self,
+		}
+	}
 }
 
 impl Display for ParseError {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			ParseError::Help => write!(f, "help requested"),
-			ParseError::Version => write!(f, "version requested"),
-			ParseError::User(msg) => write!(f, "{msg}"),
+			ParseError::Help(_) => f.write_str("help requested"),
+			ParseError::Version(_) => f.write_str("version requested"),
+			ParseError::User(msg) => f.write_str(msg),
 		}
 	}
 }
@@ -689,29 +710,6 @@ impl ArgParser {
 		eprintln!("error: {msg}");
 		eprintln!("Run with --help for usage.");
 		std::process::exit(2);
-	}
-
-	/// Handle a `ParseError`: print help or the version and exit 0, or print
-	/// the error and help and exit 2. Used by `parse` and by the macros when
-	/// they want the process to end on a parse failure.
-	pub fn exit_on(&self, e: ParseError) -> ! {
-		match e {
-			ParseError::Help => {
-				print!("{}", self.help());
-				std::process::exit(0);
-			}
-			ParseError::Version => {
-				if let Some(v) = &self.version {
-					println!("{v}");
-				}
-				std::process::exit(0);
-			}
-			ParseError::User(msg) => {
-				eprintln!("error: {msg}\n");
-				eprint!("{}", self.help());
-				std::process::exit(2);
-			}
-		}
 	}
 
 	// --- registration --------------------------------------------------
@@ -910,7 +908,7 @@ impl ArgParser {
 	pub fn parse<I: IntoIterator<Item: Into<OsString>>>(&self, raw: I) -> ParsedArgs<'_> {
 		match self.try_parse(raw) {
 			Ok(p) => p,
-			Err(e) => self.exit_on(e),
+			Err(e) => e.exit(),
 		}
 	}
 
@@ -1013,19 +1011,24 @@ impl ArgParser {
 	}
 
 	/// Returns `Some(Help)` or `Some(Version)` if the token is a built-in and
-	/// the user hasn't registered their own under that name.
+	/// the user hasn't registered their own under that name. The returned
+	/// variant carries its text, so the error is self-contained.
 	fn builtin(&self, name: &str, short: Option<char>) -> Option<ParseError> {
 		if short == Some('h') && self.find_short('h').is_none() {
-			return Some(ParseError::Help);
+			return Some(ParseError::Help(self.help()));
 		}
-		if short == Some('V') && self.find_short('V').is_none() && self.version.is_some() {
-			return Some(ParseError::Version);
+		if short == Some('V') && self.find_short('V').is_none() {
+			if let Some(v) = &self.version {
+				return Some(ParseError::Version(v.to_string()));
+			}
 		}
 		if name == "help" && self.find_long("help").is_none() {
-			return Some(ParseError::Help);
+			return Some(ParseError::Help(self.help()));
 		}
-		if name == "version" && self.find_long("version").is_none() && self.version.is_some() {
-			return Some(ParseError::Version);
+		if name == "version" && self.find_long("version").is_none() {
+			if let Some(v) = &self.version {
+				return Some(ParseError::Version(v.to_string()));
+			}
 		}
 		None
 	}
@@ -1276,9 +1279,6 @@ fn push_rows(out: &mut String, rows: &[(String, String)], w: usize) {
 // ============================================================================
 
 /// Parse one raw value, returning a `ParseError` instead of exiting.
-///
-/// The `parser` is used only to look up the accepted value list for the
-/// error message.
 fn parse_result<T: ParseArg>(
 	parser: &ArgParser,
 	raw: &OsStr,
@@ -1323,7 +1323,7 @@ fn parse_result<T: ParseArg>(
 /// registration expression, so `default(1, arg()).validate(positive)`
 /// expands to `parser.default(...).validate(positive)`.
 ///
-/// For tests, use the explicit-argv form:
+/// For tests, use the two-argument form with an explicit argv:
 ///
 /// ```ignore
 /// let args = parse_args!(parser, argv; Args { ... });
@@ -1380,12 +1380,12 @@ macro_rules! parse_args {
 ///
 /// - `PackArgs::parse(&mut parser)` reads `std::env::args_os()`.
 /// - `PackArgs::parse_from(&mut parser, argv)` reads an explicit iterator,
-///   for tests. `argv` must start with the program name. Prints help and
-///   exits on parse failure.
+///   for tests. `argv` must start with the program name. Prints help or an
+///   error and exits on failure.
 /// - `PackArgs::try_parse_from(&mut parser, argv)` does the same but returns
-///   `Err(ParseError)` instead of exiting, so a handler can return it as a
-///   value. Help and version still exit 0, because there's no useful way to
-///   represent "the user asked for help" as a value to hand back.
+///   `Result<Self, ParseError>` instead of exiting. `ParseError::Help` and
+///   `ParseError::Version` carry their text, so the caller can print them
+///   without needing the parser in scope.
 ///
 /// The parser is borrowed, so it stays usable after parsing. The macro adds
 /// no attributes; `$(#[$meta])*` is re-emitted on the generated struct.
@@ -1408,21 +1408,20 @@ macro_rules! args {
 				Self::parse_from(parser, ::std::env::args_os())
 			}
 
-			/// Parse from an explicit argv. `argv` must start with the program name.
-			/// Prints help or an error and exits on failure.
+			/// Parse from an explicit argv. `argv` must start with the
+			/// program name. Prints help or an error and exits on failure.
 			pub fn parse_from<I: IntoIterator<Item: Into<::std::ffi::OsString>>>(
-			    parser: &mut $crate::ArgParser,
-			    argv: I,
+				parser: &mut $crate::ArgParser,
+				argv: I,
 			) -> Self {
-			    match Self::try_parse_from(parser, argv) {
-			        Ok(args) => args,
-			        Err(e) => parser.exit_on(e),
-			    }
+				match Self::try_parse_from(parser, argv) {
+					Ok(args) => args,
+					Err(e) => e.exit(),
+				}
 			}
 
 			/// Parse from an explicit argv, returning a `ParseError` instead
-			/// of exiting. `argv` must start with the program name. Help and
-			/// version still exit 0.
+			/// of exiting. `argv` must start with the program name.
 			pub fn try_parse_from<I: IntoIterator<Item: Into<::std::ffi::OsString>>>(
 				parser: &mut $crate::ArgParser,
 				argv: I,
@@ -1433,11 +1432,7 @@ macro_rules! args {
 						$($tail)*
 					)$(.$chain($($cargs)*))*;
 				)*
-				let args = match parser.try_parse(argv) {
-				    Ok(a) => a,
-				    Err(e @ $crate::ParseError::User(_)) => return Err(e),
-				    Err(e) => parser.exit_on(e),
-				};
+				let args = parser.try_parse(argv)?;
 				Ok(Self { $($name: $name.try_get(&args)?,)* })
 			}
 		}
@@ -1488,6 +1483,7 @@ pub enum Dispatch<R> {
 	/// Top-level help was requested: `-h`, `--help`, `--`, no arguments, or
 	/// the registered help command.
 	Help,
+	/// Top-level version was requested.
 	Version,
 	/// The first argument was not a known command.
 	Unknown(String),
@@ -1566,6 +1562,29 @@ impl<R> Dispatcher<R> {
 		}
 	}
 
+	/// Handle `Help`, `Version`, and `Unknown` by printing and exiting;
+	/// return the `Ran` payload. Every `run_with` builds on this.
+	fn exit_on_non_ran(&self, d: Dispatch<R>) -> R {
+		match d {
+			Dispatch::Ran(r) => r,
+			Dispatch::Help => {
+				print!("{}", self.help());
+				std::process::exit(0);
+			}
+			Dispatch::Version => {
+				if let Some(v) = &self.version {
+					println!("{v}");
+				}
+				std::process::exit(0);
+			}
+			Dispatch::Unknown(name) => {
+				eprintln!("error: unknown command '{name}'");
+				eprint!("{}", self.help());
+				std::process::exit(2);
+			}
+		}
+	}
+
 	pub fn find(&self, name: &str) -> Option<&Command<R>> {
 		self.commands.iter().find(|c| c.name == name)
 	}
@@ -1597,29 +1616,6 @@ impl<R> Dispatcher<R> {
 		}
 		out
 	}
-
-	/// Handle `Dispatch::Help`, `Version`, and `Unknown` by printing and
-	/// exiting; return the `Ran` payload. Every `run_with` builds on this.
-	fn exit_on_non_ran(&self, d: Dispatch<R>) -> R {
-		match d {
-			Dispatch::Ran(r) => r,
-			Dispatch::Help => {
-				print!("{}", self.help());
-				std::process::exit(0);
-			}
-			Dispatch::Version => {
-				if let Some(v) = &self.version {
-					println!("{v}");
-				}
-				std::process::exit(0);
-			}
-			Dispatch::Unknown(name) => {
-				eprintln!("error: unknown command '{name}'");
-				eprint!("{}", self.help());
-				std::process::exit(2);
-			}
-		}
-	}
 }
 
 impl Dispatcher<()> {
@@ -1628,8 +1624,9 @@ impl Dispatcher<()> {
 		self.run_with(std::env::args_os());
 	}
 
-	/// Dispatch on an explicit argv. Prints help or an error and exits.
-	/// Handlers that produce no value (`fn(&str, &[OsString])`) use this.
+	/// Dispatch on an explicit argv. Prints help, version, or an error and
+	/// exits. Handlers that produce no value (`fn(&str, &[OsString])`) use
+	/// this.
 	pub fn run_with<I: IntoIterator<Item: Into<OsString>>>(&self, argv: I) {
 		self.exit_on_non_ran(self.dispatch_with(argv));
 	}
@@ -1645,7 +1642,10 @@ impl<R, E: Display> Dispatcher<Result<R, E>> {
 	/// success. On a handler error, prints it and exits 2.
 	///
 	/// This is the value-returning entry point: `main` can be a `match` on
-	/// the returned outcome.
+	/// the returned outcome. Handlers are responsible for handling
+	/// `ParseError::Help` and `ParseError::Version` themselves — use
+	/// [`ParseError::exit_terminal`] at the point where a parse error is
+	/// converted into the handler's error type.
 	pub fn run_with<I: IntoIterator<Item: Into<OsString>>>(&self, argv: I) -> R {
 		match self.exit_on_non_ran(self.dispatch_with(argv)) {
 			Ok(r) => r,
