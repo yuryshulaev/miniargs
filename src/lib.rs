@@ -2,10 +2,11 @@
 //!
 //! Design goals:
 //!
-//! 1. Fast compile, zero or minimal deps. No proc macros, no `syn`.
-//! 2. Small. One file.
+//! 1. No proc macros, no `syn`. Fast compile, zero dependencies.
+//! 2. No `unsafe`, zero or minimal platform-specific code.
 //! 3. Convenient. Typed keys, DRY declarations, auto help.
-//! 4. Correct on non-UTF-8 input. `PathBuf` and `OsString` accept arbitrary
+//! 4. Small. One file.
+//! 5. Correct on non-UTF-8 input. `PathBuf` and `OsString` accept arbitrary
 //!    bytes, while `String` requires UTF-8.
 
 use std::{
@@ -460,7 +461,7 @@ struct ArgDef {
 
 struct PositionalDef {
 	name: Cow<'static, str>,
-	arg: Arg,
+	desc: &'static str,
 	required: bool,
 	variadic: bool,
 }
@@ -490,6 +491,8 @@ pub struct ParsedArgs<'a> {
 	flags: HashSet<Cow<'static, str>>,
 	positionals: Vec<OsString>,
 }
+
+type ParseResult<'a> = Result<ParsedArgs<'a>, ParseError>;
 
 // Hand-written so the output shows the parsed values, not the whole
 // argument table. Deriving would also require `ArgParser: Debug`.
@@ -569,6 +572,7 @@ struct State {
 	no_more_options: bool,
 }
 
+#[derive(Default)]
 pub struct ArgParser {
 	program: String,
 	defs: Vec<ArgDef>,
@@ -578,16 +582,56 @@ pub struct ArgParser {
 	footer: Option<Cow<'static, str>>,
 }
 
+// ============================================================================
+// Registration macros
+// ============================================================================
+
+macro_rules! named_reg {
+	(
+		$(#[$doc:meta])*
+		$method:ident, $key:ident, $req:literal, $rep:literal, $hid:literal
+	) => {
+		$(#[$doc])*
+		pub fn $method<T: ParseArg>(
+			&mut self,
+			name: impl Into<Cow<'static, str>>,
+			arg: Arg,
+		) -> $key<T> {
+			let name = name.into();
+			let tn = resolve_type_name::<T>(arg.type_name);
+			self.push_named(name.clone(), arg, true, $req, $rep, T::values(), None, $hid);
+			$key { meta: KeyMeta::new(Slot::Named(name), tn) }
+		}
+	};
+}
+
+macro_rules! positional_reg {
+	(
+		$(#[$doc:meta])*
+		$method:ident, $key:ident, $req:literal, $var:literal
+	) => {
+		$(#[$doc])*
+		pub fn $method<T: ParseArg>(
+			&mut self,
+			name: impl Into<Cow<'static, str>>,
+			arg: Arg,
+		) -> $key<T> {
+			let name = name.into();
+			self.push_positional(name.clone(), &arg, $req, $var);
+			let index = self.positionals.len() - 1;
+			$key {
+				meta: KeyMeta::new(
+					Slot::Positional { name, index },
+					resolve_type_name::<T>(arg.type_name),
+				),
+			}
+		}
+	};
+}
+
 impl ArgParser {
 	pub fn new(program: impl Into<String>) -> Self {
-		ArgParser {
-			program: program.into(),
-			defs: Vec::new(),
-			positionals: Vec::new(),
-			version: None,
-			about: None,
-			footer: None,
-		}
+		ArgParser { program: program.into(), ..Default::default() }
 	}
 
 	pub fn set_version(&mut self, version: impl Into<Cow<'static, str>>) {
@@ -616,17 +660,17 @@ impl ArgParser {
 
 	// --- registration --------------------------------------------------
 
-	/// A required value argument. Missing it is an error.
-	pub fn required<T: ParseArg>(
-		&mut self,
-		name: impl Into<Cow<'static, str>>,
-		arg: Arg,
-	) -> RequiredKey<T> {
-		let name = name.into();
-		let tn = resolve_type_name::<T>(arg.type_name);
-		self.push_named(name.clone(), arg, true, true, false, T::values(), None, false);
-		RequiredKey { meta: KeyMeta::new(Slot::Named(name), tn) }
-	}
+	// A required value argument. Missing it is an error.
+	named_reg!(required, RequiredKey, true, false, false);
+
+	// An optional value argument. Absent means `None`.
+	named_reg!(optional, OptionalKey, false, false, false);
+
+	// A repeated value argument. Every occurrence accumulates.
+	named_reg!(repeated, RepeatedKey, false, true, false);
+
+	// A hidden optional value argument. Accepted but not listed in help.
+	named_reg!(hidden, OptionalKey, false, false, true);
 
 	/// A value argument with a default. Absent means the default.
 	pub fn default<T: ParseArg + Display>(
@@ -650,47 +694,11 @@ impl ArgParser {
 		DefaultKey { meta: KeyMeta::new(Slot::Named(name), tn), default }
 	}
 
-	/// An optional value argument. Absent means `None`.
-	pub fn optional<T: ParseArg>(
-		&mut self,
-		name: impl Into<Cow<'static, str>>,
-		arg: Arg,
-	) -> OptionalKey<T> {
-		let name = name.into();
-		let tn = resolve_type_name::<T>(arg.type_name);
-		self.push_named(name.clone(), arg, true, false, false, T::values(), None, false);
-		OptionalKey { meta: KeyMeta::new(Slot::Named(name), tn) }
-	}
-
-	/// A repeated value argument. Every occurrence accumulates.
-	pub fn repeated<T: ParseArg>(
-		&mut self,
-		name: impl Into<Cow<'static, str>>,
-		arg: Arg,
-	) -> RepeatedKey<T> {
-		let name = name.into();
-		let tn = resolve_type_name::<T>(arg.type_name);
-		self.push_named(name.clone(), arg, true, false, true, T::values(), None, false);
-		RepeatedKey { meta: KeyMeta::new(Slot::Named(name), tn) }
-	}
-
 	/// A boolean flag. Present means `true`.
 	pub fn flag(&mut self, name: impl Into<Cow<'static, str>>, arg: Arg) -> FlagKey {
 		let name = name.into();
 		self.push_named(name.clone(), arg, false, false, false, Vec::new(), None, false);
 		FlagKey { name }
-	}
-
-	/// A hidden optional value argument. Accepted but not listed in help.
-	pub fn hidden<T: ParseArg>(
-		&mut self,
-		name: impl Into<Cow<'static, str>>,
-		arg: Arg,
-	) -> OptionalKey<T> {
-		let name = name.into();
-		let tn = resolve_type_name::<T>(arg.type_name);
-		self.push_named(name.clone(), arg, true, false, false, T::values(), None, true);
-		OptionalKey { meta: KeyMeta::new(Slot::Named(name), tn) }
 	}
 
 	/// A hidden flag. Accepted but not listed in help.
@@ -700,57 +708,14 @@ impl ArgParser {
 		FlagKey { name }
 	}
 
-	/// A required positional argument.
-	pub fn positional<T: ParseArg>(
-		&mut self,
-		name: impl Into<Cow<'static, str>>,
-		arg: Arg,
-	) -> RequiredKey<T> {
-		let name = name.into();
-		self.push_positional(name.clone(), &arg, true, false);
-		RequiredKey {
-			meta: KeyMeta::new(
-				Slot::Positional { name, index: self.positionals.len() - 1 },
-				resolve_type_name::<T>(arg.type_name),
-			),
-		}
-	}
+	// A required positional argument.
+	positional_reg!(positional, RequiredKey, true, false);
 
-	/// An optional positional argument.
-	pub fn positional_optional<T: ParseArg>(
-		&mut self,
-		name: impl Into<Cow<'static, str>>,
-		arg: Arg,
-	) -> OptionalKey<T> {
-		let name = name.into();
-		self.push_positional(name.clone(), &arg, false, false);
-		OptionalKey {
-			meta: KeyMeta::new(
-				Slot::Positional { name, index: self.positionals.len() - 1 },
-				resolve_type_name::<T>(arg.type_name),
-			),
-		}
-	}
+	// An optional positional argument.
+	positional_reg!(positional_optional, OptionalKey, false, false);
 
-	/// A variadic positional argument. Zero or more slots; must be last.
-	pub fn positional_variadic<T: ParseArg>(
-		&mut self,
-		name: impl Into<Cow<'static, str>>,
-		arg: Arg,
-	) -> RepeatedKey<T> {
-		let name = name.into();
-		assert!(
-			self.positionals.iter().all(|p| !p.variadic),
-			"only one variadic positional allowed, and it must be last"
-		);
-		self.push_positional(name.clone(), &arg, false, true);
-		RepeatedKey {
-			meta: KeyMeta::new(
-				Slot::Positional { name, index: self.positionals.len() - 1 },
-				resolve_type_name::<T>(arg.type_name),
-			),
-		}
-	}
+	// A variadic positional argument. Zero or more slots; must be last.
+	positional_reg!(positional_variadic, RepeatedKey, false, true);
 
 	fn push_positional(
 		&mut self,
@@ -761,17 +726,20 @@ impl ArgParser {
 	) {
 		assert!(arg.short == '-', "positional {name} must not have a short");
 		assert!(!name.is_empty(), "argument name must not be empty");
-		assert!(
-			self.positionals.iter().all(|p| !p.variadic),
+		let msg = if variadic {
+			"only one variadic positional allowed, and it must be last"
+		} else {
 			"cannot declare a positional after a variadic positional"
-		);
+		};
+		assert!(self.positionals.iter().all(|p| !p.variadic), "{msg}");
 		if !variadic {
 			assert!(
 				self.positionals.iter().all(|p| p.required || !required),
 				"required positionals must be declared before optional ones"
 			);
 		}
-		self.positionals.push(PositionalDef { name, arg: *arg, required, variadic });
+		self.positionals
+			.push(PositionalDef { name, desc: arg.desc, required, variadic });
 	}
 
 	#[allow(clippy::too_many_arguments)]
@@ -818,11 +786,7 @@ impl ArgParser {
 
 	// --- parsing -------------------------------------------------------
 
-	pub fn parse<I>(&self, raw: I) -> ParsedArgs<'_>
-	where
-		I: IntoIterator,
-		I::Item: Into<OsString>,
-	{
+	pub fn parse<I: IntoIterator<Item: Into<OsString>>>(&self, raw: I) -> ParsedArgs<'_> {
 		match self.try_parse(raw) {
 			Ok(p) => p,
 			Err(ParseError::Help) => {
@@ -843,11 +807,7 @@ impl ArgParser {
 		}
 	}
 
-	pub fn try_parse<I>(&self, raw: I) -> Result<ParsedArgs<'_>, ParseError>
-	where
-		I: IntoIterator,
-		I::Item: Into<OsString>,
-	{
+	pub fn try_parse<I: IntoIterator<Item: Into<OsString>>>(&self, raw: I) -> ParseResult<'_> {
 		let mut it = raw.into_iter().map(Into::into).peekable();
 		let _argv0 = it.next();
 		let mut state = State::default();
@@ -1096,13 +1056,12 @@ impl ArgParser {
 			out.push_str(" [OPTIONS]");
 		}
 		for p in &self.positionals {
-			if p.variadic {
-				out.push_str(&format!(" [{}...]", p.name));
-			} else if p.required {
-				out.push_str(&format!(" <{}>", p.name));
-			} else {
-				out.push_str(&format!(" [{}]", p.name));
-			}
+			let (open, close) = match (p.variadic, p.required) {
+				(true, _) => ("[", "...]"),
+				(false, true) => ("<", ">"),
+				(false, false) => ("[", "]"),
+			};
+			out.push_str(&format!(" {open}{}{close}", p.name));
 		}
 		out.push('\n');
 
@@ -1135,7 +1094,7 @@ impl ArgParser {
 				} else {
 					format!("<{}>", p.name)
 				};
-				let mut right = p.arg.desc.to_string();
+				let mut right = p.desc.to_string();
 				if p.required {
 					push_tag(&mut right, "[required]");
 				}
@@ -1405,19 +1364,13 @@ macro_rules! args {
 
 			/// Parse from an explicit argv. `argv` must start with the
 			/// program name.
-			pub fn parse_from<I>(parser: &mut $crate::ArgParser, argv: I) -> Self
-			where
-				I: IntoIterator,
-				I::Item: Into<::std::ffi::OsString>,
-			{
-				$(
-					let $name = parser.$method(
-						$crate::kebab(stringify!($name)),
-						$($tail)*
-					)$(.$chain($($cargs)*))*;
-				)*
-				let args = parser.parse(argv);
-				Self { $($name: $name.get(&args),)* }
+			pub fn parse_from<I: IntoIterator<Item: Into<::std::ffi::OsString>>>(
+				parser: &mut $crate::ArgParser,
+				argv: I,
+			) -> Self {
+				$crate::parse_args!(parser, argv; $T {
+					$($name: $method ( $($tail)* ) $(. $chain ( $($cargs)* ))*),*
+				})
 			}
 		}
 	};
@@ -1517,11 +1470,7 @@ impl Dispatcher {
 	///   → prints help, exits 0
 	/// - known command → calls its handler, returns normally
 	/// - unknown → prints error and help, exits 2
-	pub fn run_with<I>(&self, argv: I)
-	where
-		I: IntoIterator,
-		I::Item: Into<OsString>,
-	{
+	pub fn run_with<I: IntoIterator<Item: Into<OsString>>>(&self, argv: I) {
 		let argv: Vec<OsString> = argv.into_iter().map(Into::into).collect();
 		let prog = self.program_from(&argv);
 
